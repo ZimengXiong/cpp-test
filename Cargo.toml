@@ -1,0 +1,10 @@
+[package]
+name = "usaco_unit_testing"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = "4.0"  # For parsing command-line arguments
+notify = "5.0"
+colored = "2.0"
+chrono = "0.4.40"# For file watching
