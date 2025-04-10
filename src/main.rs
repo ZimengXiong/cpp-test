@@ -43,7 +43,7 @@ const OUTPUT_TEST_EXECUTABLE: &str = "./output_test_watch";
 
 fn main() {
     let matches = Command::new("cpp-watcher")
-        .version("1.4") // Incremented version
+        .version("0.1.0") // Incremented version
         .author("zxzimeng@gmail.com")
         .about("Watches/Tests C++ files with options for comparing multiple algorithms and testcases")
         .arg( // Input file (not always required now)
