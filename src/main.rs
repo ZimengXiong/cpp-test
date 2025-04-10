@@ -45,17 +45,18 @@ const OUTPUT_TEST_EXECUTABLE: &str = "./output_test_watch";
 
 fn main() {
     let matches = Command::new("cpp-watcher")
-        .version("1.3") // Incremented version
-        .author("Your Name <your.email@example.com>")
-        .about("Watches/Tests C++ files. Modes: Watch & Run (-i), Watch & Test (-i -c), Stress Test (-i -g -b).")
-        .arg( // Input file (always required)
+        .version("1.4") // Incremented version
+        .author("zxzimeng@gmail.com")
+        .about("Watches/Tests C++ files with options for comparing multiple algorithims and testcases")
+        .arg( // Input file (not always required now)
               Arg::new("input")
                   .short('i')
                   .long("input")
                   .value_name("MAIN_SRC")
                   .help("Sets the main C++ solution file to watch or test")
-                  .required(true)
-                  .value_parser(clap::value_parser!(String)),
+                  .required(false)
+                  .value_parser(clap::value_parser!(String))
+                  .conflicts_with_all(["auto-test", "auto-stress"]),
         )
         // --- Test Case File Mode ---
         .arg(
@@ -66,7 +67,7 @@ fn main() {
                 .help("Continuously runs tests from file, rerunning on changes")
                 .required(false)
                 .value_parser(clap::value_parser!(String))
-                .conflicts_with_all(["generator", "brute"]), // Cannot use with stress test flags
+                .conflicts_with_all(["generator", "brute", "auto-test", "auto-stress"]),
         )
         // --- Stress Test Mode Arguments ---
         .arg(
@@ -77,8 +78,8 @@ fn main() {
                 .help("Generator C++ file for stress testing (requires -b)")
                 .required(false)
                 .value_parser(clap::value_parser!(String))
-                .requires("brute") // If -g is used, -b must also be used
-                .conflicts_with("test-cases"), // Cannot use with -c
+                .requires("brute")
+                .conflicts_with_all(["test-cases", "auto-test", "auto-stress"]),
         )
         .arg(
             Arg::new("brute")
@@ -88,16 +89,78 @@ fn main() {
                 .help("Brute-force/correct C++ solution for stress testing (requires -g)")
                 .required(false)
                 .value_parser(clap::value_parser!(String))
-                .requires("generator") // If -b is used, -g must also be used
-                .conflicts_with("test-cases"), // Cannot use with -c
+                .requires("generator")
+                .conflicts_with_all(["test-cases", "auto-test", "auto-stress"]),
+        )
+        // --- New Auto Modes with clearer help text ---
+        .arg(
+            Arg::new("auto-test")
+                .short('t')
+                .long("auto-test")
+                .value_name("PATTERN")
+                .help("Auto-find test files: looks for .cases and input.cpp files (optional PATTERN)")
+                .required(false)
+                .num_args(0..=1)  // Makes the value truly optional
+                .value_parser(clap::value_parser!(String))
+                .conflicts_with_all(["input", "test-cases", "generator", "brute", "auto-stress"]),
+        )
+        .arg(
+            Arg::new("auto-stress")
+                .short('s')
+                .long("auto-stress")
+                .value_name("PATTERN")
+                .help("Auto-find stress test files: looks for generator.cpp, brute.cpp, and input.cpp (optional PATTERN)")
+                .required(false)
+                .num_args(0..=1)  // Makes the value truly optional
+                .value_parser(clap::value_parser!(String))
+                .conflicts_with_all(["input", "test-cases", "generator", "brute", "auto-test"]),
         )
         // --- End Args ---
         .get_matches();
 
-    // --- Get Input File Path (Common to all modes) ---
-    let input_file = matches.get_one::<String>("input").unwrap();
+    // --- Auto Modes ---
+    if matches.contains_id("auto-test") {
+        println!("{}", "Mode: Automatic Test Case Detection".cyan().bold());
+        let pattern = matches.get_one::<String>("auto-test").map(|s| s.as_str());
+        
+        if let Some(p) = pattern {
+            println!("{}", format!("Using search pattern: '{}'", p).dimmed());
+        }
+        
+        if let Err(e) = auto_test_mode(pattern) {
+            eprintln!("{}", e.red());
+            std::process::exit(1);
+        }
+        return;
+    }
+    
+    if matches.contains_id("auto-stress") {
+        println!("{}", "Mode: Automatic Stress Testing".cyan().bold());
+        let pattern = matches.get_one::<String>("auto-stress").map(|s| s.as_str());
+        
+        if let Some(p) = pattern {
+            println!("{}", format!("Using search pattern: '{}'", p).dimmed());
+        }
+        
+        if let Err(e) = auto_stress_mode(pattern) {
+            eprintln!("{}", e.red());
+            std::process::exit(1);
+        }
+        return;
+    }
+    
+    // --- Original Modes (require -i) ---
+    let input_file = match matches.get_one::<String>("input") {
+        Some(file) => file,
+        None => {
+            eprintln!("{}", "Error: No input file specified. Use -i option or one of the auto modes (-t or -s).".red());
+            std::process::exit(1);
+        }
+    };
+    
+    // Rest of the original implementation remains unchanged...
     let input_path = Path::new(input_file).to_path_buf();
-    validate_cpp_file(&input_path, "Input"); // Use helper for validation
+    validate_cpp_file(&input_path, "Input");
 
     // --- Mode Selection Logic ---
     if matches.contains_id("generator") { // Stress test mode takes precedence if flags are present
@@ -118,7 +181,7 @@ fn main() {
         println!("{}", "Mode: Continuous File Testing".cyan());
         let test_file = matches.get_one::<String>("test-cases").unwrap();
         let test_path = Path::new(test_file).to_path_buf();
-        if (!test_path.exists()) {
+        if !test_path.exists() {
             eprintln!("{}", format!("Error: Test case file '{}' does not exist.", test_path.display()).red());
             std::process::exit(1);
         }
@@ -997,4 +1060,189 @@ fn run_tests(executable_path: &Path, test_cases: &[TestCase]) -> bool {
     }
     
     all_passed
+}
+
+// Helper functions for auto-discovery of files
+fn find_files(extension: &str, pattern: Option<&str>) -> Result<Vec<PathBuf>, io::Error> {
+    let current_dir = std::env::current_dir()?;
+    let mut matching_files = Vec::new();
+    
+    // Ensure extension doesn't include the dot
+    let ext = if extension.starts_with('.') {
+        &extension[1..]
+    } else {
+        extension
+    };
+    
+    for entry in fs::read_dir(current_dir)? {
+        if let Ok(entry) = entry {
+            let path = entry.path();
+            if let Some(file_ext) = path.extension() {
+                if file_ext == ext {
+                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    // Check if file matches pattern (if provided)
+                    if pattern.is_none() || file_name.contains(pattern.unwrap()) {
+                        matching_files.push(path);
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(matching_files)
+}
+
+// Function for finding a specific file with target name and optional pattern
+fn find_specific_cpp_file(target_name: &str, pattern: Option<&str>) -> Result<Option<PathBuf>, io::Error> {
+    let current_dir = std::env::current_dir()?;
+    
+    for entry in fs::read_dir(current_dir)? {
+        if let Ok(entry) = entry {
+            let path = entry.path();
+            if let Some(ext) = path.extension() {
+                if ext == "cpp" {
+                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    
+                    // Check if the file name contains both the target name and pattern (if provided)
+                    let matches_target = file_name.contains(target_name);
+                    let matches_pattern = pattern.map_or(true, |p| file_name.contains(p));
+                    
+                    if matches_target && matches_pattern {
+                        return Ok(Some(path));
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(None)
+}
+
+// Auto-detect test files and run tests
+fn auto_test_mode(pattern: Option<&str>) -> Result<(), String> {
+    println!("{}", "Searching for test cases file...".dimmed());
+    
+    // Find .cases files
+    let cases_files = find_files(".cases", pattern)
+        .map_err(|e| format!("Error scanning directory: {}", e))?;
+    
+    if cases_files.is_empty() {
+        return Err("No .cases files found in the current directory.".to_string());
+    }
+    
+    if cases_files.len() > 1 {
+        let mut file_list = String::new();
+        for file in &cases_files {
+            file_list.push_str(&format!("  - {}\n", file.display()));
+        }
+        return Err(format!("Multiple .cases files found. Please specify a search pattern or use -c:\n{}", file_list));
+    }
+    
+    let test_path = &cases_files[0];
+    println!("{}", format!("Found test case file: {}", test_path.display()).green());
+    
+    println!("{}", "Searching for C++ solution file...".dimmed());
+    
+    // First try to find input.cpp
+    let input_path = if let Ok(Some(path)) = find_specific_cpp_file("input", pattern) {
+        path
+    } else {
+        // Otherwise find any .cpp file
+        let cpp_files = find_files("cpp", pattern)
+            .map_err(|e| format!("Error scanning directory: {}", e))?;
+        
+        if cpp_files.is_empty() {
+            return Err("No .cpp files found in the current directory.".to_string());
+        }
+        
+        if cpp_files.len() > 1 {
+            let mut file_list = String::new();
+            for file in &cpp_files {
+                file_list.push_str(&format!("  - {}\n", file.display()));
+            }
+            return Err(format!("Multiple .cpp files found, but none named 'input.cpp'. Please specify a search pattern or use -i:\n{}", file_list));
+        }
+        
+        cpp_files[0].clone()
+    };
+    
+    println!("{}", format!("Using solution file: {}", input_path.display()).green());
+    
+    // Request confirmation before proceeding
+    let files = [
+        ("Test case file:", test_path.as_path()),
+        ("Solution file:", &input_path)
+    ];
+    
+    if !request_confirmation(&files) {
+        println!("{}", "Operation cancelled by user.".yellow());
+        return Ok(());
+    }
+    
+    // Run the watch_and_test function with the found files
+    watch_and_test(&input_path, test_path);
+    Ok(())
+}
+
+// Auto-detect stress test files and run stress tests
+fn auto_stress_mode(pattern: Option<&str>) -> Result<(), String> {
+    println!("{}", "Searching for stress testing files...".dimmed());
+    
+    // Find generator.cpp
+    let gen_path = find_specific_cpp_file("generator", pattern)
+        .map_err(|e| format!("Error scanning directory: {}", e))?
+        .ok_or_else(|| format!("Could not find a generator.cpp file{}", 
+            pattern.map_or(String::new(), |p| format!(" containing '{}'", p))))?;
+    println!("{}", format!("Found generator file: {}", gen_path.display()).green());
+    
+    // Find brute.cpp
+    let brute_path = find_specific_cpp_file("brute", pattern)
+        .map_err(|e| format!("Error scanning directory: {}", e))?
+        .ok_or_else(|| format!("Could not find a brute.cpp file{}", 
+            pattern.map_or(String::new(), |p| format!(" containing '{}'", p))))?;
+    println!("{}", format!("Found brute force file: {}", brute_path.display()).green());
+    
+    // Find input.cpp
+    let input_path = find_specific_cpp_file("input", pattern)
+        .map_err(|e| format!("Error scanning directory: {}", e))?
+        .ok_or_else(|| format!("Could not find an input.cpp file{}", 
+            pattern.map_or(String::new(), |p| format!(" containing '{}'", p))))?;
+    println!("{}", format!("Found solution file: {}", input_path.display()).green());
+    
+    // Request confirmation before proceeding
+    let files = [
+        ("Main solution:", &input_path),
+        ("Generator file:", &gen_path),
+        ("Brute force file:", &brute_path)
+    ];
+    
+    if !request_confirmation(&files) {
+        println!("{}", "Operation cancelled by user.".yellow());
+        return Ok(());
+    }
+    
+    // Run the stress test with the found files
+    run_stress_test(&input_path, &gen_path, &brute_path);
+    Ok(())
+}
+
+// Add a function to request user confirmation
+// Change this function to accept a slice of tuples instead of a fixed-size array
+fn request_confirmation<P: AsRef<Path>>(files: &[(&str, P)]) -> bool {
+    println!("\n{}", "The following files will be used:".bold());
+    for (description, path) in files {
+        println!("  {} {}", description.cyan(), path.as_ref().display());
+    }
+    
+    print!("\n{} (y/n) ", "Do you want to proceed?".bold());
+    io::stdout().flush().unwrap_or_default();
+    
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() {
+        println!("{}", "Failed to read input, aborting.".red());
+        return false;
+    }
+    
+    let input = input.trim().to_lowercase();
+    input == "y" || input == "yes"
 }
