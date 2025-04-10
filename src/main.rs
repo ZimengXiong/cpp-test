@@ -1,16 +1,18 @@
-use clap::{Arg, Command}; // Removed unused ArgGroup
-use notify::{RecommendedWatcher, Watcher, RecursiveMode, Config as NotifyConfig}; // Removed unused EventKind and ModifyKind
+use clap::{Arg, Command}; 
+use notify::{RecommendedWatcher, Watcher, RecursiveMode, Config as NotifyConfig};
 use std::process::{Command as ProcessCommand, Stdio};
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf};  // Keep only one PathBuf import
 use std::sync::mpsc::channel;
 use std::time::{Duration, SystemTime};
 use std::fs;
 use std::io::{self, Write, Read};
 use colored::*;
 use chrono;
-use std::sync::atomic::{AtomicBool, Ordering}; // For Ctrl+C handling
-use std::sync::Arc; // For Ctrl+C handling
-use tempfile::{NamedTempFile, TempPath}; // Import TempPath for cleanup
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tempfile::{NamedTempFile, TempPath};
+// Remove duplicate imports of std::env and PathBuf
+use rand; // Add rand crate import
 
 // --- Structs and Enums (TestCase, ParseError) remain the same ---
 #[derive(Debug)]
@@ -270,16 +272,62 @@ fn run_stress_test(input_path: &Path, gen_path: &Path, brute_path: &Path) {
                     println!("\n\n{}", "=== MISMATCH FOUND! ===".bright_red().bold());
                     println!("{}", format!("Seed: {}", seed).bold());
                     
-                    println!("\n{}", "Generated Input:".cyan().bold());
-                    test_case.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                    // Save input to file
+                    match save_output_to_file(&test_case, "input") {
+                        Ok(input_filepath) => {
+                            println!("{} {}", "Input saved to:".italic(), input_filepath.display().to_string().blue().underline());
+                        },
+                        Err(e) => {
+                            eprintln!("{} {}", "Failed to save input:".red(), e);
+                        }
+                    }
                     
-                    println!("\n{}", "Brute Force Result (Expected):".green().bold());
-                    expected_answer.trim().lines().for_each(|line| println!("{}", line.green()));
+                    // Save brute force output to file
+                    match save_output_to_file(&expected_answer, "expected") {
+                        Ok(expected_filepath) => {
+                            println!("{} {}", "Expected output saved to:".italic(), expected_filepath.display().to_string().blue().underline());
+                        },
+                        Err(e) => {
+                            eprintln!("{} {}", "Failed to save expected output:".red(), e);
+                        }
+                    }
                     
-                    println!("\n{}", "Program Result (Actual):".red().bold());
-                    actual_answer.trim().lines().for_each(|line| println!("{}", line.red()));
+                    // Save main program output to file
+                    match save_output_to_file(&actual_answer, "actual") {
+                        Ok(actual_filepath) => {
+                            println!("{} {}", "Actual output saved to:".italic(), actual_filepath.display().to_string().blue().underline());
+                        },
+                        Err(e) => {
+                            eprintln!("{} {}", "Failed to save actual output:".red(), e);
+                        }
+                    }
                     
-                    println!("\n{}", "========================".bright_red().bold());
+                    // Display abbreviated info
+                    println!("{}", "Generated Input:".cyan().bold());
+                    println!("{}", ">>>>".cyan().bold());
+                    test_case.trim().lines().take(5).for_each(|line| println!("{}", line.cyan())); // Show first 5 lines
+                    if test_case.trim().lines().count() > 5 {
+                        println!("{}", "... (see file for complete input)".cyan().dimmed());
+                    }
+                    println!("{}", ">>>>".cyan().bold());
+                    
+                    println!("{}", "Brute Force Result (Expected):".green().bold());
+                    println!("{}", ">>>>".green().bold());
+                    expected_answer.trim().lines().take(5).for_each(|line| println!("{}", line.green())); // Show first 5 lines
+                    if expected_answer.trim().lines().count() > 5 {
+                        println!("{}", "... (see file for complete output)".green().dimmed());
+                    }
+                    println!("{}", ">>>>".green().bold());
+                    
+                    println!("{}", "Program Result (Actual):".red().bold());
+                    println!("{}", ">>>>".red().bold());
+                    actual_answer.trim().lines().take(5).for_each(|line| println!("{}", line.red())); // Show first 5 lines
+                    if actual_answer.trim().lines().count() > 5 {
+                        println!("{}", "... (see file for complete output)".red().dimmed());
+                    }
+                    println!("{}", ">>>>".red().bold());
+                    
+                    println!("{}", "========================".bright_red().bold());
                     break 'seed_loop;
                 }
 
@@ -591,20 +639,24 @@ fn run_executable(executable_path: &Path, input_data: Option<&str>) -> bool {
         }
     };
 
-    // --- Output Section (simplified) ---
+    // --- Output Section (with markers on new lines) ---
     let stdout_str = String::from_utf8_lossy(&run_output.stdout);
-    println!("\n{}", "Output:".bold());
+    println!("{}", "Output:".bold());
+    println!("{}", ">>>>".cyan().bold());
     if stdout_str.trim().is_empty() {
         println!("{}", "<No output>".dimmed());
     } else {
         println!("{}", stdout_str.trim().blue());
     }
+    println!("{}", ">>>>".cyan().bold());
 
-    // --- Error Output Section (only if errors) ---
+    // --- Error Output Section (only if errors, with markers on new lines) ---
     let stderr_str = String::from_utf8_lossy(&run_output.stderr);
     if !stderr_str.trim().is_empty() {
-        eprintln!("\n{}", "Error:".yellow().bold());
+        println!("{}", "Error:".yellow().bold());
+        println!("{}", ">>>>".yellow().bold());
         eprintln!("{}", stderr_str.trim().yellow());
+        println!("{}", ">>>>".yellow().bold());
     }
 
     // --- Check Execution Status ---
@@ -705,63 +757,6 @@ fn parse_test_cases(test_path: &Path) -> Result<Vec<TestCase>, ParseError> {
 }
 
 // --- Function to Run All Tests (Continuous Test Mode) ---
-fn run_tests(executable_path: &Path, test_cases: &[TestCase]) -> bool {
-    let mut all_passed = true;
-    let mut passed_count = 0;
-    
-    if !executable_path.exists() { 
-        eprintln!("Cannot run: Executable '{}' not found.", executable_path.display());
-        return false;
-    }
-
-    for (index, test_case) in test_cases.iter().enumerate() {
-        // Simple status line with test count and name
-        print!("[{}/{}] {}... ", index + 1, test_cases.len(), test_case.name);
-        io::stdout().flush().unwrap_or_default();
-        
-        match run_with_input(executable_path, &test_case.input) {
-            Ok(actual_output_raw) => {
-                let actual_output = actual_output_raw.replace("\r\n", "\n").trim().to_string();
-                let expected_output = test_case.expected_output.replace("\r\n", "\n").trim().to_string();
-                
-                if actual_output == expected_output {
-                    println!("{}", "[PASS]".bright_green().bold());
-                    passed_count += 1;
-                } else {
-                    all_passed = false;
-                    println!("{}", "[FAIL]".bright_red().bold());
-                    
-                    // Only show details on failure
-                    println!("\n{}", "Input:".cyan().bold());
-                    test_case.input.trim().lines().for_each(|line| println!("{}", line.cyan()));
-                    
-                    println!("\n{}", "Expected Output:".green().bold());
-                    expected_output.lines().for_each(|line| println!("{}", line.green()));
-                    
-                    println!("\n{}", "Actual Output:".red().bold());
-                    actual_output.lines().for_each(|line| println!("{}", line.red()));
-                    
-                    println!("\n{}", "--------------------".dimmed());
-                }
-            }
-            Err(err_msg) => {
-                all_passed = false;
-                println!("{}", "[ERROR]".bright_red().bold());
-                
-                println!("\n{}", "Input:".cyan().bold());
-                test_case.input.trim().lines().for_each(|line| println!("{}", line.cyan()));
-                
-                println!("\n{}", "Error:".red().bold());
-                err_msg.lines().for_each(|line| println!("{}", line.red()));
-                
-                println!("\n{}", "--------------------".dimmed());
-            }
-        }
-    }
-    
-    println!("\nResult: {}/{} tests passed", passed_count, test_cases.len());
-    all_passed
-}
 
 // --- Utility Functions ---
 fn get_file_modified_time(path: &Path) -> SystemTime { fs::metadata(path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH) }
@@ -770,4 +765,156 @@ fn print_parse_error(e: &ParseError, test_path: &Path) {
     eprintln!("{}", "-------------------".red()); eprintln!("{}", "Test File Parsing Failed:".red().bold());
     match e { ParseError::Io(err) => eprintln!("Error reading '{}': {}", test_path.display(), err), ParseError::Format(msg) => eprintln!("Invalid format '{}': {}", test_path.display(), msg), }
     eprintln!("{}", "-------------------".red());
+}
+
+// Update the save_output_to_file function to use temporary files
+fn save_output_to_file(content: &str, prefix: &str) -> Result<PathBuf, io::Error> {
+    // Create a temporary file with a pattern
+    let temp_file = tempfile::Builder::new()
+        .prefix(&format!("{}_", prefix))
+        .suffix(".txt")
+        .tempfile()?;
+    
+    // Get the path
+    let filepath = temp_file.path().to_owned();
+    
+    // Write content to file
+    fs::write(&filepath, content)?;
+    
+    // Into_temp_path() prevents the file from being deleted when temp_file goes out of scope
+    temp_file.into_temp_path().keep()?;
+    
+    Ok(filepath)
+}
+
+// --- Update the run_tests function for test cases ---
+fn run_tests(executable_path: &Path, test_cases: &[TestCase]) -> bool {
+    let mut all_passed = true;
+    let mut passed_count = 0;
+    let mut failed_tests = Vec::new();
+    
+    if !executable_path.exists() { 
+        eprintln!("Cannot run: Executable '{}' not found.", executable_path.display());
+        return false;
+    }
+
+    println!("{}", "Running tests:".dimmed());
+    
+    for (index, test_case) in test_cases.iter().enumerate() {
+        // Print test case name in grey
+        print!("  {} ", format!("[{}] {}", index + 1, test_case.name).dimmed());
+        io::stdout().flush().unwrap_or_default();
+        
+        match run_with_input(executable_path, &test_case.input) {
+            Ok(actual_output_raw) => {
+                let actual_output = actual_output_raw.replace("\r\n", "\n").trim().to_string();
+                let expected_output = test_case.expected_output.replace("\r\n", "\n").trim().to_string();
+                
+                if actual_output == expected_output {
+                    passed_count += 1;
+                    println!("{}", "[PASS]".green().bold());
+                } else {
+                    all_passed = false;
+                    println!("{}", "[FAIL]".red().bold());
+                    failed_tests.push((
+                        index + 1,
+                        test_case.name.clone(),
+                        test_case.input.clone(),
+                        expected_output,
+                        actual_output
+                    ));
+                }
+            },
+            Err(err_msg) => {
+                all_passed = false;
+                println!("{}", "[ERROR]".yellow().bold());
+                failed_tests.push((
+                    index + 1,
+                    test_case.name.clone(),
+                    test_case.input.clone(),
+                    "".to_string(),
+                    err_msg
+                ));
+            }
+        }
+    }
+    
+    println!("\n{}", "Test Results:".bold());
+    println!("  {}/{} tests passed", passed_count, test_cases.len());
+    
+    // Show detailed failure information with markers (with proper newlines)
+    if !failed_tests.is_empty() {
+        println!("\n{}", "Failure Details:".red().bold());
+        println!("{}", "======================".red());
+        
+        for (i, (num, name, input, expected, actual)) in failed_tests.iter().enumerate() {
+            println!("{} {} {}", "FAILED TEST".red().bold(), num, name);
+            
+            // Create output file with all test details
+            let mut file_content = String::new();
+            file_content.push_str(&format!("FAILED TEST {} {}\n\n", num, name));
+            file_content.push_str("Input:\n>>>>>\n");
+            file_content.push_str(input);
+            file_content.push_str("\n>>>>>\n\n");
+            
+            if expected.is_empty() {
+                // Error case
+                file_content.push_str("Error:\n>>>>>\n");
+                file_content.push_str(actual);
+                file_content.push_str("\n>>>>>\n");
+                
+                // Display info
+                println!("{}", "Input:".cyan().bold());
+                println!("{}", ">>>>".cyan().bold());
+                input.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                println!("{}", ">>>>".cyan().bold());
+                
+                println!("{}", "Error:".yellow().bold());
+                println!("{}", ">>>>".yellow().bold());
+                actual.lines().for_each(|line| println!("{}", line.yellow()));
+                println!("{}", ">>>>".yellow().bold());
+            } else {
+                file_content.push_str("Expected Output:\n>>>>>\n");
+                file_content.push_str(expected);
+                file_content.push_str("\n>>>>>\n\n");
+                
+                file_content.push_str("Actual Output:\n>>>>>\n");
+                file_content.push_str(actual);
+                file_content.push_str("\n>>>>>\n");
+                
+                // Display info
+                println!("{}", "Input:".cyan().bold());
+                println!("{}", ">>>>".cyan().bold());
+                input.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                println!("{}", ">>>>".cyan().bold());
+                
+                println!("{}", "Expected Output:".green().bold());
+                println!("{}", ">>>>".green().bold());
+                expected.lines().for_each(|line| println!("{}", line.green()));
+                println!("{}", ">>>>".green().bold());
+                
+                println!("{}", "Actual Output:".red().bold());
+                println!("{}", ">>>>".red().bold());
+                actual.lines().for_each(|line| println!("{}", line.red()));
+                println!("{}", ">>>>".red().bold());
+            }
+            
+            // Save to file and display link
+            match save_output_to_file(&file_content, "testcase") {
+                Ok(filepath) => {
+                    println!("\n{} {}", "Output saved to:".italic(), filepath.display().to_string().blue().underline());
+                },
+                Err(e) => {
+                    eprintln!("{} {}", "Failed to save output:".red(), e);
+                }
+            }
+            
+            if i < failed_tests.len() - 1 {
+                println!("{}", "----------------------".dimmed());
+            }
+        }
+        println!("{}", "======================".red());
+    }
+    
+    all_passed
 }

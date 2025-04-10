@@ -10,3 +10,4 @@ colored = "2.0"
 chrono = "0.4.40"# For file watching
 ctrlc = { version = "3.0", features = ["termination"] }
 tempfile = "3"
+rand = "0.8.5"
