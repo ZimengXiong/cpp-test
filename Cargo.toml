@@ -8,3 +8,5 @@ clap = "4.0"  # For parsing command-line arguments
 notify = "5.0"
 colored = "2.0"
 chrono = "0.4.40"# For file watching
+ctrlc = { version = "3.0", features = ["termination"] }
+tempfile = "3"
