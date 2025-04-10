@@ -810,6 +810,15 @@ fn run_tests(executable_path: &Path, test_cases: &[TestCase]) -> bool {
                 let actual_output = actual_output_raw.replace("\r\n", "\n").trim().to_string();
                 let expected_output = test_case.expected_output.replace("\r\n", "\n").trim().to_string();
                 
+                // Save output to file first (regardless of pass/fail)
+                let output_filepath = match save_output_to_file(&actual_output, "output") {
+                    Ok(path) => Some(path),
+                    Err(e) => {
+                        eprintln!("{} {}", "Failed to save output:".red(), e);
+                        None
+                    }
+                };
+                
                 if actual_output == expected_output {
                     passed_count += 1;
                     println!("{}", "[PASS]".green().bold());
@@ -821,19 +830,31 @@ fn run_tests(executable_path: &Path, test_cases: &[TestCase]) -> bool {
                         test_case.name.clone(),
                         test_case.input.clone(),
                         expected_output,
-                        actual_output
+                        actual_output,
+                        output_filepath
                     ));
                 }
             },
             Err(err_msg) => {
                 all_passed = false;
                 println!("{}", "[ERROR]".yellow().bold());
+                
+                // Save error to file
+                let error_filepath = match save_output_to_file(&err_msg, "error") {
+                    Ok(path) => Some(path),
+                    Err(e) => {
+                        eprintln!("{} {}", "Failed to save error:".red(), e);
+                        None
+                    }
+                };
+                
                 failed_tests.push((
                     index + 1,
                     test_case.name.clone(),
                     test_case.input.clone(),
                     "".to_string(),
-                    err_msg
+                    err_msg,
+                    error_filepath
                 ));
             }
         }
@@ -842,20 +863,32 @@ fn run_tests(executable_path: &Path, test_cases: &[TestCase]) -> bool {
     println!("\n{}", "Test Results:".bold());
     println!("  {}/{} tests passed", passed_count, test_cases.len());
     
-    // Show detailed failure information with markers (with proper newlines)
+    // Show detailed failure information with markers
     if !failed_tests.is_empty() {
         println!("\n{}", "Failure Details:".red().bold());
         println!("{}", "======================".red());
         
-        for (i, (num, name, input, expected, actual)) in failed_tests.iter().enumerate() {
+        for (i, (num, name, input, expected, actual, output_file)) in failed_tests.iter().enumerate() {
             println!("{} {} {}", "FAILED TEST".red().bold(), num, name);
             
-            // Create output file with all test details
+            // Create comprehensive output file with all test details
             let mut file_content = String::new();
             file_content.push_str(&format!("FAILED TEST {} {}\n\n", num, name));
             file_content.push_str("Input:\n>>>>>\n");
             file_content.push_str(input);
             file_content.push_str("\n>>>>>\n\n");
+            
+            // Save input to a file too
+            let input_filepath = match save_output_to_file(input, "input") {
+                Ok(path) => {
+                    println!("\n{} {}", "Input saved to:".italic(), path.display().to_string().blue().underline());
+                    Some(path)
+                },
+                Err(e) => {
+                    eprintln!("{} {}", "Failed to save input:".red(), e);
+                    None
+                }
+            };
             
             if expected.is_empty() {
                 // Error case
@@ -863,17 +896,45 @@ fn run_tests(executable_path: &Path, test_cases: &[TestCase]) -> bool {
                 file_content.push_str(actual);
                 file_content.push_str("\n>>>>>\n");
                 
-                // Display info
+                // Display info (read from file if available)
                 println!("{}", "Input:".cyan().bold());
                 println!("{}", ">>>>".cyan().bold());
-                input.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                if let Some(path) = &input_filepath {
+                    if let Ok(content) = fs::read_to_string(path) {
+                        content.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                    } else {
+                        input.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                    }
+                } else {
+                    input.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                }
                 println!("{}", ">>>>".cyan().bold());
                 
                 println!("{}", "Error:".yellow().bold());
                 println!("{}", ">>>>".yellow().bold());
-                actual.lines().for_each(|line| println!("{}", line.yellow()));
+                if let Some(path) = output_file {
+                    if let Ok(content) = fs::read_to_string(path) {
+                        content.lines().for_each(|line| println!("{}", line.yellow()));
+                    } else {
+                        actual.lines().for_each(|line| println!("{}", line.yellow()));
+                    }
+                } else {
+                    actual.lines().for_each(|line| println!("{}", line.yellow()));
+                }
                 println!("{}", ">>>>".yellow().bold());
             } else {
+                // Save expected output to file
+                let expected_filepath = match save_output_to_file(expected, "expected") {
+                    Ok(path) => {
+                        println!("{} {}", "Expected output saved to:".italic(), path.display().to_string().blue().underline());
+                        Some(path)
+                    },
+                    Err(e) => {
+                        eprintln!("{} {}", "Failed to save expected output:".red(), e);
+                        None
+                    }
+                };
+                
                 file_content.push_str("Expected Output:\n>>>>>\n");
                 file_content.push_str(expected);
                 file_content.push_str("\n>>>>>\n\n");
@@ -882,33 +943,52 @@ fn run_tests(executable_path: &Path, test_cases: &[TestCase]) -> bool {
                 file_content.push_str(actual);
                 file_content.push_str("\n>>>>>\n");
                 
-                // Display info
+                // Display info (read from files if available)
                 println!("{}", "Input:".cyan().bold());
                 println!("{}", ">>>>".cyan().bold());
-                input.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                if let Some(path) = &input_filepath {
+                    if let Ok(content) = fs::read_to_string(path) {
+                        content.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                    } else {
+                        input.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                    }
+                } else {
+                    input.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                }
                 println!("{}", ">>>>".cyan().bold());
                 
                 println!("{}", "Expected Output:".green().bold());
                 println!("{}", ">>>>".green().bold());
-                expected.lines().for_each(|line| println!("{}", line.green()));
+                if let Some(path) = &expected_filepath {
+                    if let Ok(content) = fs::read_to_string(path) {
+                        content.lines().for_each(|line| println!("{}", line.green()));
+                    } else {
+                        expected.lines().for_each(|line| println!("{}", line.green()));
+                    }
+                } else {
+                    expected.lines().for_each(|line| println!("{}", line.green()));
+                }
                 println!("{}", ">>>>".green().bold());
                 
                 println!("{}", "Actual Output:".red().bold());
                 println!("{}", ">>>>".red().bold());
-                actual.lines().for_each(|line| println!("{}", line.red()));
+                if let Some(path) = output_file {
+                    if let Ok(content) = fs::read_to_string(path) {
+                        content.lines().for_each(|line| println!("{}", line.red()));
+                    } else {
+                        actual.lines().for_each(|line| println!("{}", line.red()));
+                    }
+                } else {
+                    actual.lines().for_each(|line| println!("{}", line.red()));
+                }
                 println!("{}", ">>>>".red().bold());
-            }
-            
-            // Save to file and display link
-            match save_output_to_file(&file_content, "testcase") {
-                Ok(filepath) => {
-                    println!("\n{} {}", "Output saved to:".italic(), filepath.display().to_string().blue().underline());
-                },
-                Err(e) => {
-                    eprintln!("{} {}", "Failed to save output:".red(), e);
+                
+                // Link to output file
+                if let Some(path) = output_file {
+                    println!("{} {}", "Actual output saved to:".italic(), path.display().to_string().blue().underline());
                 }
             }
-            
+
             if i < failed_tests.len() - 1 {
                 println!("{}", "----------------------".dimmed());
             }
