@@ -11,8 +11,6 @@ use chrono;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tempfile::{NamedTempFile, TempPath};
-// Remove duplicate imports of std::env and PathBuf
-use rand; // Add rand crate import
 
 // --- Structs and Enums (TestCase, ParseError) remain the same ---
 #[derive(Debug)]
@@ -47,7 +45,7 @@ fn main() {
     let matches = Command::new("cpp-watcher")
         .version("1.4") // Incremented version
         .author("zxzimeng@gmail.com")
-        .about("Watches/Tests C++ files with options for comparing multiple algorithims and testcases")
+        .about("Watches/Tests C++ files with options for comparing multiple algorithms and testcases")
         .arg( // Input file (not always required now)
               Arg::new("input")
                   .short('i')

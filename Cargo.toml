@@ -1,5 +1,5 @@
 [package]
-name = "usaco_unit_testing"
+name = "cpp_test"
 version = "0.1.0"
 edition = "2024"
 
@@ -10,4 +10,3 @@ colored = "2.0"
 chrono = "0.4.40"# For file watching
 ctrlc = { version = "3.0", features = ["termination"] }
 tempfile = "3"
-rand = "0.8.5"
