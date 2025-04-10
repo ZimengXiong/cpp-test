@@ -211,11 +211,11 @@ fn run_stress_test(input_path: &Path, gen_path: &Path, brute_path: &Path) {
         if !compiled_main || !compiled_gen || !compiled_brute {
             eprintln!("{}", "Compilation failed. Cannot start stress test iteration.".red());
         } else {
-            println!("{}", "Compilation successful. Starting test iterations...".green());
-            let mut seed = 1u64;
+            println!("{}", "Starting stress test with sequential seeds...".green());
+            let mut seed = 1u64; // Starting with seed 1
 
             'seed_loop: while running.load(Ordering::SeqCst) {
-                print!("{}", format!("\rTesting with seed: {} ", seed).dimmed());
+                print!("\rTesting seed: {} ", seed);
                 io::stdout().flush().unwrap_or_default();
 
                 let seed_str = seed.to_string();
@@ -227,11 +227,11 @@ fn run_stress_test(input_path: &Path, gen_path: &Path, brute_path: &Path) {
                     break 'seed_loop;
                 }
 
+                // Run generator with current seed
                 match run_with_input(&gen_exec_path, &seed_str) {
                     Ok(output) => test_case = output,
                     Err(e) => {
-                        println!();
-                        eprintln!("{}", format!("\nError running generator (seed {}): {}. Skipping seed.", seed, e).red());
+                        eprintln!("\nError running generator (seed {}): {}", seed, e);
                         seed += 1;
                         continue 'seed_loop;
                     }
@@ -241,11 +241,11 @@ fn run_stress_test(input_path: &Path, gen_path: &Path, brute_path: &Path) {
                     break 'seed_loop;
                 }
 
+                // Run brute force solution with generated test case
                 match run_with_input(&brute_exec_path, &test_case) {
                     Ok(output) => expected_answer = output,
                     Err(e) => {
-                        println!();
-                        eprintln!("{}", format!("\nError running brute-force (seed {}): {}. Skipping seed.", seed, e).red());
+                        eprintln!("\nError running brute-force (seed {}): {}", seed, e);
                         seed += 1;
                         continue 'seed_loop;
                     }
@@ -255,22 +255,35 @@ fn run_stress_test(input_path: &Path, gen_path: &Path, brute_path: &Path) {
                     break 'seed_loop;
                 }
 
+                // Run main solution with generated test case
                 match run_with_input(&main_exec_path, &test_case) {
                     Ok(output) => actual_answer = output,
                     Err(e) => {
-                        println!();
-                        eprintln!("{}", format!("\nError running main solution (seed {}): {}. Skipping seed.", seed, e).red());
+                        eprintln!("\nError running main solution (seed {}): {}", seed, e);
                         seed += 1;
                         continue 'seed_loop;
                     }
                 }
 
+                // Compare outputs
                 if expected_answer.trim() != actual_answer.trim() {
-                    println!();
-                    println!("{}", format!("\n--- Mismatch Found! (Seed: {}) ---", seed).bright_red().bold());
+                    println!("\n\n{}", "=== MISMATCH FOUND! ===".bright_red().bold());
+                    println!("{}", format!("Seed: {}", seed).bold());
+                    
+                    println!("\n{}", "Generated Input:".cyan().bold());
+                    test_case.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                    
+                    println!("\n{}", "Brute Force Result (Expected):".green().bold());
+                    expected_answer.trim().lines().for_each(|line| println!("{}", line.green()));
+                    
+                    println!("\n{}", "Program Result (Actual):".red().bold());
+                    actual_answer.trim().lines().for_each(|line| println!("{}", line.red()));
+                    
+                    println!("\n{}", "========================".bright_red().bold());
                     break 'seed_loop;
                 }
 
+                // Increment seed for next iteration
                 seed += 1;
             }
         }
@@ -554,25 +567,16 @@ fn run_executable(executable_path: &Path, input_data: Option<&str>) -> bool {
     let mut child = match command.spawn() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed spawn {}: {}", executable_path.display(), e);
+            eprintln!("Failed to spawn {}: {}", executable_path.display(), e);
             return false;
         }
     };
 
-    // --- Input Section ---
-    println!("\n{}{}", "Program Input:".bold(), "\n-------------------".dimmed());
-    if let Some(input) = input_data {
-        println!("{}", input.trim().cyan());
-    } else {
-        println!("{}", "<No input provided>".dimmed());
-    }
-    println!("{}", "-------------------".dimmed());
-
-    // --- Write Input to Program ---
+    // --- Write Input to Program (if any) ---
     if let Some(input) = input_data {
         if let Some(mut stdin) = child.stdin.take() {
             if let Err(e) = stdin.write_all(input.as_bytes()) {
-                eprintln!("Failed stdin write: {}", e);
+                eprintln!("Failed to write to stdin: {}", e);
             }
             drop(stdin);
         }
@@ -582,33 +586,30 @@ fn run_executable(executable_path: &Path, input_data: Option<&str>) -> bool {
     let run_output = match child.wait_with_output() {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("Failed wait {}: {}", executable_path.display(), e);
+            eprintln!("Failed to wait for {}: {}", executable_path.display(), e);
             return false;
         }
     };
 
-    // --- Output Section ---
-    println!("\n{}{}", "Program Output:".bold(), "\n-------------------".dimmed());
+    // --- Output Section (simplified) ---
     let stdout_str = String::from_utf8_lossy(&run_output.stdout);
+    println!("\n{}", "Output:".bold());
     if stdout_str.trim().is_empty() {
-        println!("{}", "<No standard output>".dimmed());
+        println!("{}", "<No output>".dimmed());
     } else {
         println!("{}", stdout_str.trim().blue());
     }
-    println!("{}", "-------------------\n".dimmed());
 
-    // --- Error Output Section ---
+    // --- Error Output Section (only if errors) ---
     let stderr_str = String::from_utf8_lossy(&run_output.stderr);
     if !stderr_str.trim().is_empty() {
-        eprintln!("{}", "Program Error Output:".yellow().bold());
-        eprintln!("{}", "-------------------".yellow());
+        eprintln!("\n{}", "Error:".yellow().bold());
         eprintln!("{}", stderr_str.trim().yellow());
-        eprintln!("{}", "-------------------\n".yellow());
     }
 
     // --- Check Execution Status ---
     if !run_output.status.success() {
-        eprintln!("{}", format!("Execution failed: {}", run_output.status).red());
+        eprintln!("\n{}", format!("Execution failed: {}", run_output.status).red());
         return false;
     }
     true
@@ -617,28 +618,65 @@ fn run_executable(executable_path: &Path, input_data: Option<&str>) -> bool {
 // --- Function to Run with Input and Capture Output (Test/Stress Modes) ---
 fn run_with_input(executable_path: &Path, input_data: &str) -> Result<String, String> {
     let mut command = ProcessCommand::new(executable_path);
-    command.stdin(Stdio::piped()); command.stdout(Stdio::piped()); command.stderr(Stdio::piped());
+    command.stdin(Stdio::piped());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
 
-    let mut child = command.spawn().map_err(|e| format!("Spawn failed '{}': {}", executable_path.display(), e))?;
+    let mut child = command.spawn().map_err(|e| format!("Failed to spawn '{}': {}", executable_path.display(), e))?;
+    
+    // Write input data to stdin
+    let stdin_handle = child.stdin.take().ok_or_else(|| format!("Failed to open stdin for {}", executable_path.display()))?;
     let input_data_owned = input_data.to_string();
-    let stdin_handle = child.stdin.take().ok_or_else(|| format!("Failed open stdin for {}", executable_path.display()))?;
-    let stdin_thread = std::thread::spawn(move || { let mut stdin = stdin_handle; stdin.write_all(input_data_owned.as_bytes()).map_err(|e| format!("Stdin write failed: {}", e)) });
+    let stdin_thread = std::thread::spawn(move || {
+        let mut stdin = stdin_handle;
+        stdin.write_all(input_data_owned.as_bytes())
+            .map_err(|e| format!("Failed to write to stdin: {}", e))
+    });
 
-    let mut stdout_output = String::new(); let mut stderr_output = String::new();
-    let mut stdout_handle = child.stdout.take().ok_or_else(|| format!("Failed open stdout for {}", executable_path.display()))?;
-    let mut stderr_handle = child.stderr.take().ok_or_else(|| format!("Failed open stderr for {}", executable_path.display()))?;
+    // Capture output
+    let mut stdout_output = String::new();
+    let mut stderr_output = String::new();
+    let mut stdout_handle = child.stdout.take().ok_or_else(|| format!("Failed to open stdout for {}", executable_path.display()))?;
+    let mut stderr_handle = child.stderr.take().ok_or_else(|| format!("Failed to open stderr for {}", executable_path.display()))?;
 
-    let stdout_thread = std::thread::spawn(move || { stdout_handle.read_to_string(&mut stdout_output).map_err(|e| format!("Stdout read failed: {}", e))?; Ok::<String, String>(stdout_output) });
-    let stderr_thread = std::thread::spawn(move || { stderr_handle.read_to_string(&mut stderr_output).map_err(|e| format!("Stderr read failed: {}", e))?; Ok::<String, String>(stderr_output) });
+    let stdout_thread = std::thread::spawn(move || {
+        stdout_handle.read_to_string(&mut stdout_output).map_err(|e| format!("Failed to read stdout: {}", e))?;
+        Ok::<String, String>(stdout_output)
+    });
+    
+    let stderr_thread = std::thread::spawn(move || {
+        stderr_handle.read_to_string(&mut stderr_output).map_err(|e| format!("Failed to read stderr: {}", e))?;
+        Ok::<String, String>(stderr_output)
+    });
 
+    // Wait for completion
     let status = child.wait().map_err(|e| format!("Wait failed: {}", e))?;
-    match stdin_thread.join() { Ok(Ok(())) => {}, Ok(Err(e)) => return Err(e), Err(_) => return Err("Stdin thread panic".to_string()), }
-    let actual_stdout = match stdout_thread.join() { Ok(Ok(out)) => out, Ok(Err(e)) => return Err(e), Err(_) => return Err("Stdout thread panic".to_string()), };
-    let actual_stderr = match stderr_thread.join() { Ok(Ok(err)) => err, Ok(Err(e)) => return Err(e), Err(_) => return Err("Stderr thread panic".to_string()), };
+    match stdin_thread.join() {
+        Ok(Ok(())) => {},
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err("Stdin thread panic".to_string()),
+    }
+    
+    let actual_stdout = match stdout_thread.join() {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err("Stdout thread panic".to_string()),
+    };
+    
+    let actual_stderr = match stderr_thread.join() {
+        Ok(Ok(err)) => err,
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err("Stderr thread panic".to_string()),
+    };
 
-    if !status.success() { Err(format!( "Execution failed status: {}. Stderr:\n{}", status, actual_stderr.trim())) }
-    else if !actual_stderr.trim().is_empty() { println!("{}", format!("Warning: '{}' produced stderr:\n{}", executable_path.display(), actual_stderr.trim()).yellow()); Ok(actual_stdout) }
-    else { Ok(actual_stdout) }
+    if !status.success() {
+        Err(format!("Execution failed: {}\nStderr: {}", status, actual_stderr.trim()))
+    } else if !actual_stderr.trim().is_empty() {
+        // Only report stderr if it's non-empty but don't print full content unless needed
+        Ok(actual_stdout)
+    } else {
+        Ok(actual_stdout)
+    }
 }
 
 // --- Function to Parse Test Cases ---
@@ -668,36 +706,60 @@ fn parse_test_cases(test_path: &Path) -> Result<Vec<TestCase>, ParseError> {
 
 // --- Function to Run All Tests (Continuous Test Mode) ---
 fn run_tests(executable_path: &Path, test_cases: &[TestCase]) -> bool {
-    let mut all_passed = true; let mut passed_count = 0;
-    println!("{}", "\n--- Running Tests ---".bold());
-    if !executable_path.exists() { eprintln!("Cannot run: Executable '{}' not found.", executable_path.display()); return false; }
+    let mut all_passed = true;
+    let mut passed_count = 0;
+    
+    if !executable_path.exists() { 
+        eprintln!("Cannot run: Executable '{}' not found.", executable_path.display());
+        return false;
+    }
 
     for (index, test_case) in test_cases.iter().enumerate() {
-        let status_line = format!( "[{}/{}] Running '{}'... ", index + 1, test_cases.len(), test_case.name );
-        print!("{}", status_line.dimmed()); io::stdout().flush().unwrap_or_default();
+        // Simple status line with test count and name
+        print!("[{}/{}] {}... ", index + 1, test_cases.len(), test_case.name);
+        io::stdout().flush().unwrap_or_default();
+        
         match run_with_input(executable_path, &test_case.input) {
             Ok(actual_output_raw) => {
                 let actual_output = actual_output_raw.replace("\r\n", "\n").trim().to_string();
                 let expected_output = test_case.expected_output.replace("\r\n", "\n").trim().to_string();
+                
                 if actual_output == expected_output {
-                    println!("{}", "[PASS]".bright_green().bold()); passed_count += 1;
+                    println!("{}", "[PASS]".bright_green().bold());
+                    passed_count += 1;
                 } else {
-                    all_passed = false; println!("{}", "[FAIL]".bright_red().bold());
-                    println!("{}:", "Input".cyan()); test_case.input.trim().lines().for_each(|line| println!("  {}", line.cyan()));
-                    println!("{}:", "Expected".green()); expected_output.lines().for_each(|line| println!("  {}", line.green()));
-                    println!("{}:", "Actual".red()); actual_output.lines().for_each(|line| println!("  {}", line.red()));
-                    println!("{}", "--------------------".dimmed());
+                    all_passed = false;
+                    println!("{}", "[FAIL]".bright_red().bold());
+                    
+                    // Only show details on failure
+                    println!("\n{}", "Input:".cyan().bold());
+                    test_case.input.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                    
+                    println!("\n{}", "Expected Output:".green().bold());
+                    expected_output.lines().for_each(|line| println!("{}", line.green()));
+                    
+                    println!("\n{}", "Actual Output:".red().bold());
+                    actual_output.lines().for_each(|line| println!("{}", line.red()));
+                    
+                    println!("\n{}", "--------------------".dimmed());
                 }
             }
             Err(err_msg) => {
-                all_passed = false; println!("{}", "[ERROR]".bright_red().bold());
-                println!("{}:", "Input".cyan()); test_case.input.trim().lines().for_each(|line| println!("  {}", line.cyan()));
-                println!("{}:", "Error".red()); err_msg.lines().for_each(|line| println!("  {}", line.red()));
-                println!("{}", "--------------------".dimmed());
+                all_passed = false;
+                println!("{}", "[ERROR]".bright_red().bold());
+                
+                println!("\n{}", "Input:".cyan().bold());
+                test_case.input.trim().lines().for_each(|line| println!("{}", line.cyan()));
+                
+                println!("\n{}", "Error:".red().bold());
+                err_msg.lines().for_each(|line| println!("{}", line.red()));
+                
+                println!("\n{}", "--------------------".dimmed());
             }
         }
     }
-    println!("{}", "--- Test Summary ---".bold()); println!( "Result: {}/{} tests passed.", passed_count, test_cases.len());
+    
+    println!("\nResult: {}/{} tests passed", passed_count, test_cases.len());
     all_passed
 }
 
