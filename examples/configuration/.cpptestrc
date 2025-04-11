@@ -1,0 +1,30 @@
+# Default files for each mode
+default_watcher: sol_problem1.cpp
+default_testcase:
+  solution: sol_problem1.cpp
+  testcases: test_problem1.cases
+default_stress:
+  solution: algo1_solution.cpp
+  brute: algo1_brute.cpp
+  generator: algo1_generator.cpp
+
+# Custom named configurations
+problem1:
+  mode: testcase
+  solution: sol_problem1.cpp
+  testcases: test_problem1.cases
+
+problem2:
+  mode: testcase
+  solution: sol_problem2.cpp
+  testcases: test_problem2.cases
+
+algo1:
+  mode: stress
+  solution: algo1_solution.cpp
+  brute: algo1_brute.cpp
+  generator: algo1_generator.cpp
+
+quick:
+  mode: watcher
+  solution: sol_problem1.cpp

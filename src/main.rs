@@ -11,6 +11,11 @@ use chrono;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tempfile::{NamedTempFile, TempPath};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use ctrlc;
+use serde_yaml;
+use notify::Error as NotifyError;
 
 // --- Structs and Enums (TestCase, ParseError) remain the same ---
 #[derive(Debug)]
@@ -33,15 +38,62 @@ impl From<io::Error> for ParseError {
 
 
 // --- Constants for executable names ---
-// Keep separate names to avoid clashes between modes
-const OUTPUT_WATCH_EXECUTABLE: &str = "./output_watch_run";
-const OUTPUT_TEST_EXECUTABLE: &str = "./output_test_watch";
-// const OUTPUT_MAIN_STRESS: &str = "./output_main_stress";
-// const OUTPUT_GEN_STRESS: &str = "./output_gen_stress";
-// const OUTPUT_BRUTE_STRESS: &str = "./output_brute_stress";
+// Remove unused constants
+// const OUTPUT_WATCH_EXECUTABLE: &str = "./output_watch_run";
+// const OUTPUT_TEST_EXECUTABLE: &str = "./output_test_watch";
 // --- End Constants ---
 
+// Configuration file structures
+#[derive(Debug, Deserialize, Serialize)]
+struct TestCaseConfig {
+    solution: String,
+    testcases: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct StressConfig {
+    solution: String,
+    brute: String,
+    generator: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]  // Add Clone here
+struct CustomConfig {
+    mode: String,
+    #[serde(default)]
+    solution: String,
+    #[serde(default)]
+    testcases: String,
+    #[serde(default)]
+    brute: String,
+    #[serde(default)]
+    generator: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct CppTestConfig {
+    #[serde(default)]
+    default_watcher: Option<String>,
+    #[serde(default)]
+    default_testcase: Option<TestCaseConfig>,
+    #[serde(default)]
+    default_stress: Option<StressConfig>,
+    #[serde(flatten)]
+    custom: HashMap<String, CustomConfig>,
+}
+
 fn main() {
+    // Check for custom config name first
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && !args[1].starts_with('-') {
+        let custom_name = &args[1];
+        if let Some(custom_config) = load_config_custom(custom_name) {
+            handle_custom_config(custom_name, &custom_config);
+            return;
+        }
+    }
+
+    // Normal command-line parsing
     let matches = Command::new("cpp-watcher")
         .version("0.1.0") // Incremented version
         .author("zxzimeng@gmail.com")
@@ -96,7 +148,7 @@ fn main() {
                 .short('t')
                 .long("auto-test")
                 .value_name("PATTERN")
-                .help("Auto-find test files: looks for .cases and input.cpp files (optional PATTERN)")
+                .help("Auto-find test files: looks for .cases and solution.cpp files (optional PATTERN)")
                 .required(false)
                 .num_args(0..=1)  // Makes the value truly optional
                 .value_parser(clap::value_parser!(String))
@@ -107,7 +159,7 @@ fn main() {
                 .short('s')
                 .long("auto-stress")
                 .value_name("PATTERN")
-                .help("Auto-find stress test files: looks for generator.cpp, brute.cpp, and input.cpp (optional PATTERN)")
+                .help("Auto-find stress test files: looks for generator.cpp, brute.cpp, and solution.cpp (optional PATTERN)")
                 .required(false)
                 .num_args(0..=1)  // Makes the value truly optional
                 .value_parser(clap::value_parser!(String))
@@ -220,43 +272,48 @@ fn create_temp_executable() -> TempPath {
         .into_temp_path()
 }
 
+// --- Helper function to set up file watcher ---
+fn setup_watcher(tx: std::sync::mpsc::Sender<Result<notify::Event, NotifyError>>, paths_to_watch: &[&Path]) -> Result<RecommendedWatcher, NotifyError> {
+    let mut watcher = RecommendedWatcher::new(tx, NotifyConfig::default())?;
+    for path in paths_to_watch {
+        if let Err(e) = watcher.watch(path, RecursiveMode::NonRecursive) {
+            eprintln!("{} {} {}", "Failed to watch file:".red(), path.display(), e);
+            // Return the error to indicate failure
+            return Err(e);
+        }
+    }
+    Ok(watcher)
+}
+
+// --- Helper function to set up Ctrl+C handler ---
+fn setup_ctrlc_handler() -> Arc<AtomicBool> {
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        if r.load(Ordering::SeqCst) {
+            println!("\n{}", "(Ctrl+C detected, stopping...)".yellow());
+            r.store(false, Ordering::SeqCst);
+        }
+    })
+    .expect("Error setting Ctrl+C handler");
+    running
+}
+
 // --- Updated Stress Test Function ---
 fn run_stress_test(input_path: &Path, gen_path: &Path, brute_path: &Path) {
     let (tx, rx) = channel();
-    let mut watcher = match RecommendedWatcher::new(tx, NotifyConfig::default()) {
+    // Use helper function for watcher setup
+    let _watcher = match setup_watcher(tx, &[input_path, gen_path, brute_path]) {
         Ok(w) => w,
-        Err(e) => {
-            eprintln!("{} {}", "Failed to create file watcher:".red(), e);
-            return;
-        }
+        Err(_) => return, // Error already printed in helper
     };
-
-    if let Err(e) = watcher.watch(input_path, RecursiveMode::NonRecursive) {
-        eprintln!("{} {} {}", "Failed to watch file:".red(), input_path.display(), e);
-        return;
-    }
-    if let Err(e) = watcher.watch(gen_path, RecursiveMode::NonRecursive) {
-        eprintln!("{} {} {}", "Failed to watch file:".red(), gen_path.display(), e);
-        return;
-    }
-    if let Err(e) = watcher.watch(brute_path, RecursiveMode::NonRecursive) {
-        eprintln!("{} {} {}", "Failed to watch file:".red(), brute_path.display(), e);
-        return;
-    }
 
     let mut last_input_modified = get_file_modified_time(input_path);
     let mut last_gen_modified = get_file_modified_time(gen_path);
     let mut last_brute_modified = get_file_modified_time(brute_path);
 
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || {
-        if r.load(Ordering::SeqCst) {
-            println!("\n{}", "(Ctrl+C detected, stopping stress test...)".yellow());
-            r.store(false, Ordering::SeqCst);
-        }
-    })
-    .expect("Error setting Ctrl+C handler");
+    // Use helper function for Ctrl+C handler
+    let running = setup_ctrlc_handler();
 
     println!("{}", "\nStarting stress test loop. Watching for file changes...".green());
 
@@ -438,32 +495,20 @@ fn run_stress_test(input_path: &Path, gen_path: &Path, brute_path: &Path) {
 // --- Function for Simple Watch Mode ---
 fn watch_and_run(input_path: &Path) {
     let (tx, rx) = channel();
-    let mut watcher = match RecommendedWatcher::new(tx, NotifyConfig::default()) {
+    // Use helper function for watcher setup
+    let _watcher = match setup_watcher(tx, &[input_path]) { // Assign to _watcher as it might not be used directly after setup
         Ok(w) => w,
-        Err(e) => {
-            eprintln!("{} {}", "Failed to create file watcher:".red(), e);
-            std::process::exit(1);
+        Err(_) => {
+            std::process::exit(1); // Exit if watcher setup fails critically
         }
     };
 
-    if let Err(e) = watcher.watch(input_path, RecursiveMode::NonRecursive) {
-        eprintln!("{} {} {}", "Failed to watch file:".red(), input_path.display(), e);
-        std::process::exit(1);
-    }
 
     let mut last_modified = get_file_modified_time(input_path);
     let output_executable = create_temp_executable();
 
-    // --- Handle Ctrl+C for cleanup ---
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || {
-        if r.load(Ordering::SeqCst) {
-            println!("\n{}", "(Ctrl+C detected, exiting and cleaning up...)".yellow());
-            r.store(false, Ordering::SeqCst);
-        }
-    })
-    .expect("Error setting Ctrl+C handler");
+    // Use helper function for Ctrl+C handler
+    let running = setup_ctrlc_handler();
 
     // --- Perform Initial Compile and Run ---
     println!("{}", "\nPerforming initial compile and run...".yellow());
@@ -519,37 +564,21 @@ fn watch_and_run(input_path: &Path) {
 // --- Function for Continuous Test Mode ---
 fn watch_and_test(input_path: &Path, test_path: &Path) {
     let (tx, rx) = channel();
-    let mut watcher = match RecommendedWatcher::new(tx, NotifyConfig::default()) {
+    // Use helper function for watcher setup
+    let _watcher = match setup_watcher(tx, &[input_path, test_path]) { // Assign to _watcher
         Ok(w) => w,
-        Err(_e) => {
-            eprintln!("{} {}", "Failed to create file watcher:".red(), _e);
-            std::process::exit(1);
+        Err(_) => {
+            std::process::exit(1); // Exit if watcher setup fails critically
         }
     };
 
-    if let Err(_e) = watcher.watch(input_path, RecursiveMode::NonRecursive) {
-        eprintln!("{} {}", "Failed to watch file:".red(), _e);
-        std::process::exit(1);
-    }
-    if let Err(_e) = watcher.watch(test_path, RecursiveMode::NonRecursive) {
-        eprintln!("{} {}", "Failed to watch file:".red(), _e);
-        std::process::exit(1);
-    }
 
     let mut last_input_modified = get_file_modified_time(input_path);
     let mut last_test_modified = get_file_modified_time(test_path);
     let output_executable = create_temp_executable();
 
-    // --- Handle Ctrl+C for cleanup ---
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || {
-        if r.load(Ordering::SeqCst) {
-            println!("\n{}", "(Ctrl+C detected, exiting and cleaning up...)".yellow());
-            r.store(false, Ordering::SeqCst);
-        }
-    })
-    .expect("Error setting Ctrl+C handler");
+    // Use helper function for Ctrl+C handler
+    let running = setup_ctrlc_handler();
 
     // --- Perform Initial Compile, Parse, and Test Run ---
     println!("{}", "\nPerforming initial test run...".yellow());
@@ -1090,86 +1119,72 @@ fn find_files(extension: &str, pattern: Option<&str>) -> Result<Vec<PathBuf>, io
     Ok(matching_files)
 }
 
-// Function for finding a specific file with target name and optional pattern
-fn find_specific_cpp_file(target_name: &str, pattern: Option<&str>) -> Result<Option<PathBuf>, io::Error> {
-    let current_dir = std::env::current_dir()?;
-    
-    for entry in fs::read_dir(current_dir)? {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            if let Some(ext) = path.extension() {
-                if ext == "cpp" {
-                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    
-                    // Check if the file name contains both the target name and pattern (if provided)
-                    let matches_target = file_name.contains(target_name);
-                    let matches_pattern = pattern.map_or(true, |p| file_name.contains(p));
-                    
-                    if matches_target && matches_pattern {
-                        return Ok(Some(path));
-                    }
-                }
-            }
-        }
-    }
-    
-    Ok(None)
-}
 
 // Auto-detect test files and run tests
 fn auto_test_mode(pattern: Option<&str>) -> Result<(), String> {
-    println!("{}", "Searching for test cases file...".dimmed());
+    println!("{}", "Searching for test files...".dimmed());
     
-    // Find .cases files
-    let cases_files = find_files(".cases", pattern)
-        .map_err(|e| format!("Error scanning directory: {}", e))?;
-    
-    if cases_files.is_empty() {
-        return Err("No .cases files found in the current directory.".to_string());
-    }
-    
-    if cases_files.len() > 1 {
-        let mut file_list = String::new();
-        for file in &cases_files {
-            file_list.push_str(&format!("  - {}\n", file.display()));
-        }
-        return Err(format!("Multiple .cases files found. Please specify a search pattern or use -c:\n{}", file_list));
-    }
-    
-    let test_path = &cases_files[0];
-    println!("{}", format!("Found test case file: {}", test_path.display()).green());
-    
-    println!("{}", "Searching for C++ solution file...".dimmed());
-    
-    // First try to find input.cpp
-    let input_path = if let Ok(Some(path)) = find_specific_cpp_file("input", pattern) {
-        path
-    } else {
-        // Otherwise find any .cpp file
-        let cpp_files = find_files("cpp", pattern)
-            .map_err(|e| format!("Error scanning directory: {}", e))?;
-        
-        if cpp_files.is_empty() {
-            return Err("No .cpp files found in the current directory.".to_string());
-        }
-        
-        if cpp_files.len() > 1 {
-            let mut file_list = String::new();
-            for file in &cpp_files {
-                file_list.push_str(&format!("  - {}\n", file.display()));
+    // Check config file first if no pattern specified
+    if pattern.is_none() {
+        if let Some((solution_path, test_path)) = load_config_default_testcase() {
+            println!("{}", "Using default testcase configuration:".green());
+            println!("{}", format!("Using solution file: {}", solution_path.display()).green());
+            println!("{}", format!("Using test case file: {}", test_path.display()).green());
+            
+            let files = [
+                ("Test case file:", test_path.as_path()),
+                ("Solution file:", solution_path.as_path())
+            ];
+            
+            if !request_confirmation(&files) {
+                println!("{}", "Operation cancelled by user.".yellow());
+                return Ok(());
             }
-            return Err(format!("Multiple .cpp files found, but none named 'input.cpp'. Please specify a search pattern or use -i:\n{}", file_list));
+            
+            watch_and_test(&solution_path, &test_path);
+            return Ok(());
         }
-        
-        cpp_files[0].clone()
-    };
+    }
     
-    println!("{}", format!("Using solution file: {}", input_path.display()).green());
+    // Special case: If no pattern and solution.cpp + test.cases exist, use them
+    if pattern.is_none() {
+        // Check for exact filenames
+        let solution_path = Path::new("solution.cpp");
+        let test_path = Path::new("test.cases");
+        
+        if solution_path.exists() && test_path.exists() {
+            println!("{}", "Found exact matches:".green());
+            println!("{}", format!("Using solution file: {}", solution_path.display()).green());
+            println!("{}", format!("Using test case file: {}", test_path.display()).green());
+            
+            let files = [
+                ("Test case file:", test_path),
+                ("Solution file:", solution_path)
+            ];
+            
+            if !request_confirmation(&files) {
+                println!("{}", "Operation cancelled by user.".yellow());
+                return Ok(());
+            }
+            
+            watch_and_test(solution_path, test_path);
+            return Ok(());
+        }
+    }
+
+    // Find solution file based on patterns and priority
+    let solution_file = find_solution_file(pattern)?;
+    
+    // Find test case file based on patterns and priority
+    let test_file = find_test_case_file(pattern)?;
+    
+    println!("{}", format!("Using solution file: {}", solution_file.display()).green());
+    println!("{}", format!("Using test case file: {}", test_file.display()).green());
     
     // Request confirmation before proceeding
     let files = [
-        ("Test case file:", test_path.as_path()),
-        ("Solution file:", &input_path)
+        ("Test case file:", test_file.as_path()),
+        ("Solution file:", &solution_file)
     ];
     
     if !request_confirmation(&files) {
@@ -1178,51 +1193,55 @@ fn auto_test_mode(pattern: Option<&str>) -> Result<(), String> {
     }
     
     // Run the watch_and_test function with the found files
-    watch_and_test(&input_path, test_path);
+    watch_and_test(&solution_file, &test_file);
     Ok(())
 }
 
-// Auto-detect stress test files and run stress tests
-fn auto_stress_mode(pattern: Option<&str>) -> Result<(), String> {
-    println!("{}", "Searching for stress testing files...".dimmed());
+// Find solution file based on search hierarchy
+
+// Find test case file based on search hierarchy
+
+// Helper function to find cpp file with specific pattern
+fn find_cpp_file_with_pattern(pattern: &str) -> Result<PathBuf, String> {
+    let cpp_files = find_files("cpp", Some(pattern))
+        .map_err(|e| format!("Error scanning directory: {}", e))?;
     
-    // Find generator.cpp
-    let gen_path = find_specific_cpp_file("generator", pattern)
-        .map_err(|e| format!("Error scanning directory: {}", e))?
-        .ok_or_else(|| format!("Could not find a generator.cpp file{}", 
-            pattern.map_or(String::new(), |p| format!(" containing '{}'", p))))?;
-    println!("{}", format!("Found generator file: {}", gen_path.display()).green());
-    
-    // Find brute.cpp
-    let brute_path = find_specific_cpp_file("brute", pattern)
-        .map_err(|e| format!("Error scanning directory: {}", e))?
-        .ok_or_else(|| format!("Could not find a brute.cpp file{}", 
-            pattern.map_or(String::new(), |p| format!(" containing '{}'", p))))?;
-    println!("{}", format!("Found brute force file: {}", brute_path.display()).green());
-    
-    // Find input.cpp
-    let input_path = find_specific_cpp_file("input", pattern)
-        .map_err(|e| format!("Error scanning directory: {}", e))?
-        .ok_or_else(|| format!("Could not find an input.cpp file{}", 
-            pattern.map_or(String::new(), |p| format!(" containing '{}'", p))))?;
-    println!("{}", format!("Found solution file: {}", input_path.display()).green());
-    
-    // Request confirmation before proceeding
-    let files = [
-        ("Main solution:", &input_path),
-        ("Generator file:", &gen_path),
-        ("Brute force file:", &brute_path)
-    ];
-    
-    if !request_confirmation(&files) {
-        println!("{}", "Operation cancelled by user.".yellow());
-        return Ok(());
+    if cpp_files.is_empty() {
+        return Err(format!("No .cpp files containing '{}' found.", pattern));
     }
     
-    // Run the stress test with the found files
-    run_stress_test(&input_path, &gen_path, &brute_path);
-    Ok(())
+    if cpp_files.len() > 1 {
+        let mut file_list = String::new();
+        for file in &cpp_files {
+            file_list.push_str(&format!("  - {}\n", file.display()));
+        }
+        return Err(format!("Multiple .cpp files matching '{}' found. Please be more specific:\n{}", pattern, file_list));
+    }
+    
+    Ok(cpp_files[0].clone())
 }
+
+// Helper function to find cases file with specific pattern
+fn find_cases_file_with_pattern(pattern: &str) -> Result<PathBuf, String> {
+    let cases_files = find_files("cases", Some(pattern))
+        .map_err(|e| format!("Error scanning directory: {}", e))?;
+    
+    if cases_files.is_empty() {
+        return Err(format!("No .cases files containing '{}' found.", pattern));
+    }
+    
+    if cases_files.len() > 1 {
+        let mut file_list = String::new();
+        for file in &cases_files {
+            file_list.push_str(&format!("  - {}\n", file.display()));
+        }
+        return Err(format!("Multiple .cases files matching '{}' found. Please be more specific:\n{}", pattern, file_list));
+    }
+    
+    Ok(cases_files[0].clone())
+}
+
+// Auto-detect stress test files and run stress tests
 
 // Add a function to request user confirmation
 // Change this function to accept a slice of tuples instead of a fixed-size array
@@ -1243,4 +1262,560 @@ fn request_confirmation<P: AsRef<Path>>(files: &[(&str, P)]) -> bool {
     
     let input = input.trim().to_lowercase();
     input == "y" || input == "yes"
+}
+
+// Helper function to check if a filename matches a target pattern with word boundary rules
+fn matches_target_pattern(filename: &str, target_patterns: &[&str]) -> bool {
+    let lowercase = filename.to_lowercase();
+    
+    for &pattern in target_patterns {
+        // Check if it's the exact file name (without extension)
+        if lowercase == pattern {
+            return true;
+        }
+        
+        // Check if it's at the start with word boundary after
+        if lowercase.starts_with(pattern) {
+            if lowercase.len() == pattern.len() {
+                return true;
+            }
+            
+            // Check if followed by underscore or uppercase letter (camelCase)
+            let next_char = lowercase.chars().nth(pattern.len());
+            if next_char == Some('_') {
+                return true;
+            }
+            
+            // Check camelCase (check if original file has uppercase at boundary)
+            if filename.chars().nth(pattern.len()).map_or(false, |c| c.is_uppercase()) {
+                return true;
+            }
+        }
+        
+        // Check if it's at the end with word boundary before
+        if lowercase.ends_with(pattern) {
+            let prefix_end = lowercase.len() - pattern.len();
+            if prefix_end == 0 {
+                return true;
+            }
+            
+            // Check if preceded by underscore
+            let prev_char = lowercase.chars().nth(prefix_end - 1);
+            if prev_char == Some('_') {
+                return true;
+            }
+            
+            // Check camelCase (uppercase at start of pattern)
+            if pattern.chars().next().is_some() { // Check if pattern is not empty
+                if filename.chars().nth(prefix_end).map_or(false, |ch| ch.is_uppercase()) {
+                    return true;
+                }
+            }
+        }
+        
+        // Check if it's in middle with word boundaries on both sides
+        if let Some(pos) = lowercase.find(pattern) {
+            let before = pos == 0 || lowercase.chars().nth(pos - 1) == Some('_');
+            let after_pos = pos + pattern.len();
+            let after = after_pos == lowercase.len() || 
+                        lowercase.chars().nth(after_pos) == Some('_') ||
+                        filename.chars().nth(after_pos).map_or(false, |c| c.is_uppercase());
+            
+            if before && after {
+                return true;
+            }
+        }
+    }
+    
+    false
+}
+
+// Updated function to find specific file with proper boundary checks
+fn find_specific_cpp_file(target_type: &str, pattern: Option<&str>) -> Result<Option<PathBuf>, io::Error> {
+    let current_dir = std::env::current_dir()?;
+    let mut matching_files = Vec::new();
+    
+    // Define pattern prefixes based on target type
+    let target_patterns = match target_type {
+        "solution" => vec!["solution", "sol"],
+        "brute" => vec!["brute", "bru"],
+        "generator" => vec!["generator", "gen"],
+        _ => vec![target_type],
+    };
+    
+    // Check minimum length requirement (at least 3 characters)
+    for &tp in &target_patterns {
+        if tp.len() < 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput, 
+                format!("Target pattern '{}' must be at least 3 characters", tp)
+            ));
+        }
+    }
+    
+    for entry in fs::read_dir(current_dir)? {
+        if let Ok(entry) = entry {
+            let path = entry.path();
+            if let Some(ext) = path.extension() {
+                if ext == "cpp" {
+                    if let Some(filename) = path.file_stem().and_then(|n| n.to_str()) {
+                        // Check if file matches target pattern with proper boundaries
+                        if matches_target_pattern(filename, &target_patterns) {
+                            // If pattern is provided, also check that
+                            if pattern.map_or(true, |p| filename.to_lowercase().contains(&p.to_lowercase())) {
+                                matching_files.push(path.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Check for ambiguities
+    if matching_files.len() > 1 {
+        // Found multiple matches which is ambiguous
+        return Ok(None);
+    }
+    
+    Ok(matching_files.into_iter().next())
+}
+
+// Helper function to handle ambiguous file errors
+fn handle_ambiguous_files(file_type: &str, pattern: Option<&str>, ambiguous_files: Vec<PathBuf>) -> Result<PathBuf, String> {
+    if ambiguous_files.is_empty() {
+        Err(format!("Could not find a {} file{}",
+            file_type,
+            pattern.map_or(String::new(), |p| format!(" containing '{}'", p))))
+    } else if ambiguous_files.len() > 1 {
+        let mut file_list = String::new();
+        for file in &ambiguous_files {
+            file_list.push_str(&format!("  - {}\n", file.display()));
+        }
+        Err(format!("Found multiple {} files, which is ambiguous:\n{}", file_type, file_list))
+    } else {
+        // Exactly one file found
+        Ok(ambiguous_files[0].clone())
+    }
+}
+
+// Updated auto-stress mode with better error handling for ambiguities
+fn auto_stress_mode(pattern: Option<&str>) -> Result<(), String> {
+    println!("{}", "Searching for stress testing files...".dimmed());
+    
+    // Check config file first if no pattern specified
+    if pattern.is_none() {
+        if let Some((solution_path, brute_path, generator_path)) = load_config_default_stress() {
+            println!("{}", "Using default stress configuration:".green());
+            println!("{}", format!("Using solution file: {}", solution_path.display()).green());
+            println!("{}", format!("Using brute force file: {}", brute_path.display()).green());
+            println!("{}", format!("Using generator file: {}", generator_path.display()).green());
+            
+            let files = [
+                ("Main solution:", solution_path.as_path()),
+                ("Generator file:", generator_path.as_path()),
+                ("Brute force file:", brute_path.as_path())
+            ];
+            
+            if !request_confirmation(&files) {
+                println!("{}", "Operation cancelled by user.".yellow());
+                return Ok(());
+            }
+            
+            run_stress_test(&solution_path, &generator_path, &brute_path);
+            return Ok(());
+        }
+    }
+    
+    // Find generator.cpp using the ambiguity helper
+    let all_gen_files = list_all_matching_files("generator", pattern)
+        .map_err(|e| format!("Error listing generator files: {}", e))?;
+    let gen_path = handle_ambiguous_files("generator", pattern, all_gen_files)?;
+    println!("{}", format!("Found generator file: {}", gen_path.display()).green());
+
+    // Find brute.cpp with similar logic using the ambiguity helper
+    let all_brute_files = list_all_matching_files("brute", pattern)
+        .map_err(|e| format!("Error listing brute force files: {}", e))?;
+    let brute_path = handle_ambiguous_files("brute force", pattern, all_brute_files)?;
+    println!("{}", format!("Found brute force file: {}", brute_path.display()).green());
+
+    // Find solution.cpp with the same careful handling using the ambiguity helper
+    let all_solution_files = list_all_matching_files("solution", pattern)
+        .map_err(|e| format!("Error listing solution files: {}", e))?;
+    let input_path = handle_ambiguous_files("solution", pattern, all_solution_files)?;
+    println!("{}", format!("Found solution file: {}", input_path.display()).green());
+
+    // Proceed with stress testing
+    // ...rest of the code remains unchanged...
+    
+    // Request confirmation before proceeding
+    let files = [
+        ("Main solution:", &input_path),
+        ("Generator file:", &gen_path),
+        ("Brute force file:", &brute_path)
+    ];
+    
+    if !request_confirmation(&files) {
+        println!("{}", "Operation cancelled by user.".yellow());
+        return Ok(());
+    }
+    
+    // Run the stress test with the found files
+    run_stress_test(&input_path, &gen_path, &brute_path);
+    Ok(())
+}
+
+// Helper function to list all files matching a target for ambiguity reporting
+fn list_all_matching_files(target_type: &str, pattern: Option<&str>) -> Result<Vec<PathBuf>, io::Error> {
+    let current_dir = std::env::current_dir()?;
+    let mut matching_files = Vec::new();
+    
+    // Define pattern prefixes based on target type
+    let target_patterns = match target_type {
+        "solution" => vec!["solution", "sol"],
+        "brute" => vec!["brute", "bru"],
+        "generator" => vec!["generator", "gen"],
+        "test" => vec!["test", "t"],
+        _ => vec![target_type],
+    };
+    
+    for entry in fs::read_dir(current_dir)? {
+        if let Ok(entry) = entry {
+            let path = entry.path();
+            if let Some(ext) = path.extension() {
+                let expected_ext = if target_type == "test" { "cases" } else { "cpp" };
+                if ext == expected_ext {
+                    if let Some(filename) = path.file_stem().and_then(|n| n.to_str()) {
+                        if matches_target_pattern(filename, &target_patterns) {
+                            if pattern.map_or(true, |p| filename.to_lowercase().contains(&p.to_lowercase())) {
+                                matching_files.push(path.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(matching_files)
+}
+
+// Update find_solution_file for -t mode to use the same pattern matching logic
+fn find_solution_file(pattern: Option<&str>) -> Result<PathBuf, String> {
+    // If pattern is specified, just find files matching pattern
+    if let Some(p) = pattern {
+        return find_cpp_file_with_pattern(p);
+    }
+    
+    // No pattern - find files with solution or sol with proper word boundaries
+    let solution_files = list_all_matching_files("solution", None)
+        .map_err(|e| format!("Error scanning directory: {}", e))?;
+    
+    if solution_files.is_empty() {
+        // No solution files found, check if there's exactly one .cpp file
+        let cpp_files = find_files("cpp", None)
+            .map_err(|e| format!("Error scanning directory: {}", e))?;
+        
+        if cpp_files.is_empty() {
+            return Err("No .cpp files found in the current directory.".to_string());
+        }
+        
+        if cpp_files.len() == 1 {
+            return Ok(cpp_files[0].clone());
+        }
+        
+        // Multiple .cpp files but none match solution pattern
+        let mut file_list = String::new();
+        for file in &cpp_files {
+            file_list.push_str(&format!("  - {}\n", file.display()));
+        }
+        return Err(format!("Multiple .cpp files found, but none match 'solution' or 'sol' pattern. Use -i or a pattern:\n{}", file_list));
+    }
+    
+    if solution_files.len() > 1 {
+        // Multiple solution files is ambiguous
+        let mut file_list = String::new();
+        for file in &solution_files {
+            file_list.push_str(&format!("  - {}\n", file.display()));
+        }
+        return Err(format!("Multiple files matching 'solution'/'sol' found. Please specify a pattern or use -i:\n{}", file_list));
+    }
+    
+    Ok(solution_files[0].clone())
+}
+
+// Update find_test_case_file for -t mode with similar pattern matching logic
+fn find_test_case_file(pattern: Option<&str>) -> Result<PathBuf, String> {
+    // If pattern is specified, just find files matching pattern
+    if let Some(p) = pattern {
+        return find_cases_file_with_pattern(p);
+    }
+    
+    // Check for exact match with test.cases
+    let test_path = Path::new("test.cases");
+    if test_path.exists() {
+        return Ok(test_path.to_path_buf());
+    }
+    
+    // No exact match - find files with test with proper word boundaries
+    let test_files = list_all_matching_files("test", None)
+        .map_err(|e| format!("Error scanning directory: {}", e))?;
+    
+    if test_files.is_empty() {
+        // No test files found, check if there's exactly one .cases file
+        let cases_files = find_files("cases", None)
+            .map_err(|e| format!("Error scanning directory: {}", e))?;
+        
+        if cases_files.is_empty() {
+            return Err("No .cases files found in the current directory.".to_string());
+        }
+        
+        if cases_files.len() == 1 {
+            return Ok(cases_files[0].clone());
+        }
+        
+        // Multiple .cases files but none match test pattern
+        let mut file_list = String::new();
+        for file in &cases_files {
+            file_list.push_str(&format!("  - {}\n", file.display()));
+        }
+        return Err(format!("Multiple .cases files found, but none match 'test' pattern. Use -c or a pattern:\n{}", file_list));
+    }
+    
+    if test_files.len() > 1 {
+        // Multiple test files is ambiguous
+        let mut file_list = String::new();
+        for file in &test_files {
+            file_list.push_str(&format!("  - {}\n", file.display()));
+        }
+        return Err(format!("Multiple files matching 'test' found. Please specify a pattern or use -c:\n{}", file_list));
+    }
+    
+    Ok(test_files[0].clone())
+}
+
+// Function to load the configuration file
+fn load_config() -> Option<CppTestConfig> {
+    let config_path = Path::new(".cpptestrc");
+    if !config_path.exists() {
+        return None;
+    }
+    
+    match fs::read_to_string(config_path) {
+        Ok(contents) => {
+            match serde_yaml::from_str::<CppTestConfig>(&contents) {
+                Ok(config) => Some(config),
+                Err(e) => {
+                    eprintln!("{}", format!("Error parsing .cpptestrc: {}", e).red());
+                    None
+                }
+            }
+        },
+        Err(e) => {
+            eprintln!("{}", format!("Error reading .cpptestrc: {}", e).red());
+            None
+        }
+    }
+}
+
+// Function to get default watcher path from config
+fn load_config_default_watcher() -> Option<PathBuf> {
+    if let Some(config) = load_config() {
+        if let Some(path_str) = config.default_watcher {
+            let path = PathBuf::from(path_str);
+            if path.exists() {
+                return Some(path);
+            } else {
+                eprintln!("{}", format!("Warning: default_watcher file '{}' not found", path.display()).yellow());
+            }
+        }
+    }
+    None
+}
+
+// Function to get default testcase config
+fn load_config_default_testcase() -> Option<(PathBuf, PathBuf)> {
+    if let Some(config) = load_config() {
+        if let Some(testcase_config) = config.default_testcase {
+            let solution_path = PathBuf::from(&testcase_config.solution);
+            let testcases_path = PathBuf::from(&testcase_config.testcases);
+            
+            if !solution_path.exists() {
+                eprintln!("{}", format!("Warning: default_testcase solution file '{}' not found", solution_path.display()).yellow());
+                return None;
+            }
+            
+            if !testcases_path.exists() {
+                eprintln!("{}", format!("Warning: default_testcase testcases file '{}' not found", testcases_path.display()).yellow());
+                return None;
+            }
+            
+            return Some((solution_path, testcases_path));
+        }
+    }
+    None
+}
+
+// Function to get default stress config
+fn load_config_default_stress() -> Option<(PathBuf, PathBuf, PathBuf)> {
+    if let Some(config) = load_config() {
+        if let Some(stress_config) = config.default_stress {
+            let solution_path = PathBuf::from(&stress_config.solution);
+            let brute_path = PathBuf::from(&stress_config.brute);
+            let generator_path = PathBuf::from(&stress_config.generator);
+            
+            if !solution_path.exists() {
+                eprintln!("{}", format!("Warning: default_stress solution file '{}' not found", solution_path.display()).yellow());
+                return None;
+            }
+            
+            if !brute_path.exists() {
+                eprintln!("{}", format!("Warning: default_stress brute file '{}' not found", brute_path.display()).yellow());
+                return None;
+            }
+            
+            if !generator_path.exists() {
+                eprintln!("{}", format!("Warning: default_stress generator file '{}' not found", generator_path.display()).yellow());
+                return None;
+            }
+            
+            return Some((solution_path, brute_path, generator_path));
+        }
+    }
+    None
+}
+
+// Function to get custom config by name
+fn load_config_custom(name: &str) -> Option<CustomConfig> {
+    if let Some(config) = load_config() {
+        return config.custom.get(name).cloned();  // This now works
+    }
+    None
+}
+
+// Handle custom named configurations
+fn handle_custom_config(name: &str, config: &CustomConfig) {
+    match config.mode.as_str() {
+        "watcher" => {
+            if config.solution.is_empty() {
+                eprintln!("{}", format!("Custom config '{}' missing solution field", name).red());
+                std::process::exit(1);
+            }
+            
+            let solution_path = PathBuf::from(&config.solution);
+            if !solution_path.exists() {
+                eprintln!("{}", format!("Solution file '{}' not found", solution_path.display()).red());
+                std::process::exit(1);
+            }
+            
+            println!("{}", format!("Using custom '{}' watcher configuration", name).green());
+            println!("{}", format!("Watching file: {}", solution_path.display()).dimmed());
+            watch_and_run(&solution_path);
+        },
+        "testcase" => {
+            if config.solution.is_empty() || config.testcases.is_empty() {
+                eprintln!("{}", format!("Custom config '{}' missing solution or testcases field", name).red());
+                std::process::exit(1);
+            }
+            
+            let solution_path = PathBuf::from(&config.solution);
+            let testcases_path = PathBuf::from(&config.testcases);
+            
+            if !solution_path.exists() {
+                eprintln!("{}", format!("Solution file '{}' not found", solution_path.display()).red());
+                std::process::exit(1);
+            }
+            
+            if !testcases_path.exists() {
+                eprintln!("{}", format!("Test case file '{}' not found", testcases_path.display()).red());
+                std::process::exit(1);
+            }
+            
+            println!("{}", format!("Using custom '{}' testcase configuration", name).green());
+            println!("{}", format!("Using solution file: {}", solution_path.display()).green());
+            println!("{}", format!("Using test case file: {}", testcases_path.display()).green());
+            watch_and_test(&solution_path, &testcases_path);
+        },
+        "stress" => {
+            if config.solution.is_empty() || config.brute.is_empty() || config.generator.is_empty() {
+                eprintln!("{}", format!("Custom config '{}' missing required fields for stress mode", name).red());
+                std::process::exit(1);
+            }
+            
+            let solution_path = PathBuf::from(&config.solution);
+            let brute_path = PathBuf::from(&config.brute);
+            let generator_path = PathBuf::from(&config.generator);
+            
+            if !solution_path.exists() {
+                eprintln!("{}", format!("Solution file '{}' not found", solution_path.display()).red());
+                std::process::exit(1);
+            }
+            
+            if !brute_path.exists() {
+                eprintln!("{}", format!("Brute force file '{}' not found", brute_path.display()).red());
+                std::process::exit(1);
+            }
+            
+            if !generator_path.exists() {
+                eprintln!("{}", format!("Generator file '{}' not found", generator_path.display()).red());
+                std::process::exit(1);
+            }
+            
+            println!("{}", format!("Using custom '{}' stress configuration", name).green());
+            println!("{}", format!("Using solution file: {}", solution_path.display()).green());
+            println!("{}", format!("Using brute force file: {}", brute_path.display()).green());
+            println!("{}", format!("Using generator file: {}", generator_path.display()).green());
+            run_stress_test(&solution_path, &generator_path, &brute_path);
+        },
+        _ => {
+            eprintln!("{}", format!("Invalid mode '{}' in custom config '{}'", config.mode, name).red());
+            std::process::exit(1);
+        }
+    }
+}
+
+// Function to autodetect solution file for -i mode
+fn autodetect_solution_file() -> Result<Option<PathBuf>, String> {
+    // First check for config file
+    if let Some(file_path) = load_config_default_watcher() {
+        println!("{}", "Using default watcher from config file".green());
+        return Ok(Some(file_path));
+    }
+
+    let cpp_files = find_files("cpp", None)
+        .map_err(|e| format!("Error scanning directory: {}", e))?;
+    
+    if cpp_files.is_empty() {
+        return Ok(None);
+    }
+    
+    // Look for files with .sol, .solution, etc. using the matching pattern
+    let sol_files: Vec<PathBuf> = cpp_files.iter()
+        .filter(|path| {
+            if let Some(name) = path.file_stem().and_then(|n| n.to_str()) {
+                matches_target_pattern(name, &["solution", "sol"])
+            } else {
+                false
+            }
+        })
+        .cloned()
+        .collect();
+    
+    if sol_files.is_empty() {
+        // If there's only one cpp file, use it
+        if cpp_files.len() == 1 {
+            return Ok(Some(cpp_files[0].clone()));
+        }
+        return Ok(None);
+    }
+    
+    if sol_files.len() > 1 {
+        let mut file_list = String::new();
+        for file in &sol_files {
+            file_list.push_str(&format!("  - {}\n", file.display()));
+        }
+        return Err(format!("Multiple solution files found. This is ambiguous:\n{}", file_list));
+    }
+    
+    Ok(Some(sol_files[0].clone()))
 }

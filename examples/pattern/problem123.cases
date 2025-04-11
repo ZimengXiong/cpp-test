@@ -1,0 +1,22 @@
+@{Empty array}
+0
+@
+0
+
+@{Single element}
+1
+42
+@
+42
+
+@{Multiple elements}
+5
+10 -3 25 7 14
+@
+25
+
+@{Negative numbers}
+3
+-5 -10 -2
+@
+-2

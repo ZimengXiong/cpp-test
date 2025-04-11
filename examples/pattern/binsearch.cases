@@ -1,0 +1,28 @@
+@{Empty array}
+0
+@
+Empty array
+
+@{Single element}
+1
+42
+@
+42
+
+@{Odd length array}
+5
+5 3 1 4 2
+@
+3
+
+@{Even length array}
+6
+6 3 1 5 4 2
+@
+3
+
+@{Already sorted}
+7
+1 2 3 4 5 6 7
+@
+4
