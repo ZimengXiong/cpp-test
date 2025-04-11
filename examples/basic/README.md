@@ -1,4 +1,4 @@
-#Basic Example - Manual File Specification
+# Basic Example - Manual File Specification
 
 Usage Examples:
 1. Simple watch and run:
