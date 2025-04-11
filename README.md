@@ -135,43 +135,7 @@ cpp_test -s [optional_pattern]
 
 ## Examples
 
-### Example Test Case File
-
-```
-@{Add postive numbers}
-1 2
-@
-3
-
-@{Add negative numbers}
--2 -5
-@
--7
-```
-
-### Example Stress Test Generator
-
-```cpp
-#include <iostream>
-#include <random>
-using namespace std;
-
-int main() {
-    int seed;
-    cin >> seed;
-    
-    mt19937 rng(seed);
-    int n = rng() % 10 + 1;
-    
-    cout << n << endl;
-    for (int i = 0; i < n; i++) {
-        cout << rng() % 100 << " ";
-    }
-    cout << endl;
-    
-    return 0;
-}
-```
+See the [examples](examples/) folder
 
 ## License
 
