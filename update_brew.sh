@@ -10,6 +10,14 @@ EXECUTABLE_PATH="target/release/${PROJECT_NAME}"
 
 echo "Starting release process for ${PROJECT_NAME}..."
 
+echo "Extracting version from Cargo.toml..."
+PROJECT_VERSION=$(grep '^version = ' Cargo.toml | awk -F '"' '{print $2}')
+if [ -z "${PROJECT_VERSION}" ]; then
+    echo "Error: Could not extract version from Cargo.toml" >&2
+    exit 1
+fi
+echo "Project version: ${PROJECT_VERSION}"
+
 echo "Building release version..."
 cargo build --release
 
@@ -18,6 +26,10 @@ if [ ! -f "${EXECUTABLE_PATH}" ]; then
     exit 1
 fi
 echo "Build successful."
+
+# Construct the new URL
+NEW_URL="https://github.com/ZimengXiong/cpp-test/releases/download/v${PROJECT_VERSION}/${ARCHIVE_NAME}"
+echo "New URL: ${NEW_URL}"
 
 echo "Creating tarball '${ARCHIVE_NAME}'..."
 (cd target/release && tar czf "../../${ARCHIVE_NAME}" "${PROJECT_NAME}")
@@ -39,14 +51,22 @@ if [ ! -f "${FORMULA_PATH}" ]; then
     exit 1
 fi
 
-sed -i.bak "s~^  sha256 \".*\"$~  sha256 \"${NEW_SHA256}\"~" "${FORMULA_PATH}"
+sed -i.bak "s~^  url ".*"$~  url "${NEW_URL}"~" "${FORMULA_PATH}"
+if [ ! -f "${FORMULA_PATH}.bak" ]; then
+     echo "Error: Failed to update url in formula file." >&2
+     rm -f "${FORMULA_PATH}.bak" # Clean up bak file if url update fails
+     exit 1
+fi
+rm "${FORMULA_PATH}.bak" # Remove backup after successful url update
+
+sed -i.bak "s~^  sha256 ".*"$~  sha256 "${NEW_SHA256}"~" "${FORMULA_PATH}"
 
 if [ ! -f "${FORMULA_PATH}.bak" ]; then
      echo "Error: Failed to update sha256 in formula file." >&2
+     # No reliable way to restore the original URL here easily
      exit 1
 fi
 
-rm "${FORMULA_PATH}.bak"
 echo "Formula updated."
 
 echo "Committing and pushing changes to Homebrew tap repository at '${HOMEBREW_REPO_PATH}'..."
