@@ -21,7 +21,7 @@
 3. Running stress tests with different patterns:
    When you have multiple algorithms to stress test in one directory:
    - `cpp-test -s sort` (tests sorting algorithm)
-   - `cpp-test -s search` (would test search algorithm if files existed)
+   - `cpp-test -s search` (runs the search set of files instead of sort)
 
 ### NOTE: Unlike `-t`, `-s` requires the files to contain `bru[te] | sol[ution] | gen[erator]` to differentiate between the different files.
 
