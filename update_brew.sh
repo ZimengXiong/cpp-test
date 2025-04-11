@@ -2,7 +2,7 @@
 
 set -e
 
-PROJECT_NAME="cpp_test"
+PROJECT_NAME="cpp-test"
 FORMULA_PATH="/Users/zimengx/code/homebrew-tools/Formula/${PROJECT_NAME}.rb"
 HOMEBREW_REPO_PATH="/Users/zimengx/code/homebrew-tools/Formula"
 ARCHIVE_NAME="${PROJECT_NAME}-macos.tar.gz"

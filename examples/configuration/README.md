@@ -36,16 +36,16 @@ quick:
 ```
 
 # Using Default Configurations
-When no files are specified, cpp_test will check for defaults in the config file:
+When no files are specified, cpp-test will check for defaults in the config file:
 ```bash
 # Run with default watcher file
-cpp_test
+cpp-test
 
 # Run with default test case files
-cpp_test -t
+cpp-test -t
 
 # Run with default stress test files
-cpp_test -s
+cpp-test -s
 ```
 
 # Using Named Configurations
@@ -53,16 +53,16 @@ Run a specific configuration directly using its name:
 
 ```bash
 # Run problem1 test configuration
-cpp_test problem1
+cpp-test problem1
 
 # Run problem2 test configuration
-cpp_test problem2
+cpp-test problem2
 
 # Run algo1 stress test configuration
-cpp_test algo1
+cpp-test algo1
 
 # Run quick watcher mode
-cpp_test quick
+cpp-test quick
 ```
 
 # Configuration Options

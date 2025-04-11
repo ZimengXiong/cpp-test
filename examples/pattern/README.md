@@ -9,14 +9,14 @@
 ## Usage Examples
 
 1. Filter for binary search problem:
-   `cpp_test -t bin`
+   `cpp-test -t bin`
    
    This will automatically detect and use:
    - binsearch.cpp (solution)
    - binsearch.cases (test cases)
 
 2. Filter for problem 123:
-   `cpp_test -t 123`
+   `cpp-test -t 123`
    
    This will automatically detect and use:
    - problem123_solution.cpp (solution)

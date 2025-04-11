@@ -8,7 +8,7 @@
 ## Usage Examples
 
 1. Run stress testing with pattern filtering:
-   `cpp_test -s sort`
+   `cpp-test -s sort`
    
    This will automatically detect and use:
    - sort_solution.cpp (main solution)
@@ -16,12 +16,12 @@
    - sort_generator.cpp (random test generator)
 
 2. Manual specification:
-   `cpp_test -i sort_solution.cpp -b sort_brute.cpp -g sort_generator.cpp`
+   `cpp-test -i sort_solution.cpp -b sort_brute.cpp -g sort_generator.cpp`
 
 3. Running stress tests with different patterns:
    When you have multiple algorithms to stress test in one directory:
-   - `cpp_test -s sort` (tests sorting algorithm)
-   - `cpp_test -s search` (would test search algorithm if files existed)
+   - `cpp-test -s sort` (tests sorting algorithm)
+   - `cpp-test -s search` (would test search algorithm if files existed)
 
 ### NOTE: Unlike `-t`, `-s` requires the files to contain `bru[te] | sol[ution] | gen[erator]` to differentiate between the different files.
 

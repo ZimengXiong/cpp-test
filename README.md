@@ -1,4 +1,4 @@
-# cpp_test
+# cpp-test
 
 Command-line tool for C++ development, testing, and evaluation for competitive programming
 
@@ -36,15 +36,15 @@ Command-line tool for C++ development, testing, and evaluation for competitive p
 brew tap zimengxiong/tools
 
 # Install the tool
-brew install cpp_test
+brew install cpp-test
 ```
 
 ### From Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/zimengxiong/cpp_test.git
-cd cpp_test
+git clone https://github.com/zimengxiong/cpp-test.git
+cd cpp-test
 
 # Build with Cargo
 cargo build --release
@@ -57,7 +57,7 @@ cargo build --release
 Monitors a C++ file for changes, automatically recompiling and running it:
 
 ```bash
-cpp_test -i solution.cpp
+cpp-test -i solution.cpp
 ```
 
 ### Test Case Mode
@@ -65,7 +65,7 @@ cpp_test -i solution.cpp
 Run your solution against test cases and verify outputs:
 
 ```bash
-cpp_test -i solution.cpp -c tests.cases
+cpp-test -i solution.cpp -c tests.cases
 ```
 
 ### Stress Testing
@@ -73,17 +73,17 @@ cpp_test -i solution.cpp -c tests.cases
 Compare your solution against a brute-force implementation using generated inputs:
 
 ```bash
-cpp_test -i solution.cpp -g generator.cpp -b brute.cpp
+cpp-test -i solution.cpp -g generator.cpp -b brute.cpp
 ```
 
 ### Auto-detection Modes
 
 ```bash
 # Auto-detect test cases files and solution
-cpp_test -t [optional_pattern]
+cpp-test -t [optional_pattern]
 
 # Auto-detect stress testing files
-cpp_test -s [optional_pattern]
+cpp-test -s [optional_pattern]
 ```
 
 ## Command Line Options
