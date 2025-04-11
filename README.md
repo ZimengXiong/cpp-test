@@ -185,16 +185,12 @@ another_config:
 Command-line arguments (`-i`, `-c`, `-b`, `-g`) always take precedence over configuration file settings.
 
 ## Examples
-
-See the [examples](examples/) folder
-
-## License
-
-This project is licensed under the MIT License.
-=======
 See [Examples](/examples/)
 * [Basic](examples/basic/README.md)
 * [Pattern matching](examples/pattern/README.md)
 * [Stress testing](examples/stress/README.md)
 * [Configuration file](examples/configuration/README.md)
-```
+
+## License
+
+This project is licensed under the MIT License.
