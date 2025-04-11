@@ -185,7 +185,6 @@ another_config:
 Command-line arguments (`-i`, `-c`, `-b`, `-g`) always take precedence over configuration file settings.
 
 ## Examples
-<<<<<<< HEAD
 
 See the [examples](examples/) folder
 
@@ -199,4 +198,3 @@ See [Examples](/examples/)
 * [Stress testing](examples/stress/README.md)
 * [Configuration file](examples/configuration/README.md)
 ```
->>>>>>> 1b62a41 (update README with configuration file options, update brew updater)
