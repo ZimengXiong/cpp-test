@@ -18,8 +18,6 @@ Command-line tool for C++ development, testing, and evaluation for competitive p
   - [Test Case File Format](#test-case-file-cases)
   - [File Structure for Auto Modes](#file-structure-for-auto-modes)
 - [Examples](#examples)
-  - [Example Test Case File](#example-test-case-file)
-  - [Example Stress Test Generator](#example-stress-test-generator)
 - [License](#license)
 
 ## Features
