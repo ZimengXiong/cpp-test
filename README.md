@@ -193,4 +193,4 @@ See [Examples](/examples/)
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the GPLv2 License.
